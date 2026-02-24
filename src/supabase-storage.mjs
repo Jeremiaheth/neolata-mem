@@ -204,7 +204,7 @@ export function supabaseStorage({
     },
 
     genId() {
-      return `mem_${randomUUID()}`;
+      return randomUUID();
     },
 
     // ── Incremental Operations ──

@@ -45,7 +45,7 @@ describe('MemoryGraph + supabaseStorage', () => {
 
   it('store + search round-trip', async () => {
     const result = await graph.store('agent-1', 'User prefers dark mode');
-    expect(result.id).toMatch(/^mem_/);
+    expect(result.id).toMatch(/^[0-9a-f]{8}-/);
 
     const results = await graph.search('agent-1', 'dark mode');
     expect(results.length).toBeGreaterThan(0);

@@ -15,7 +15,7 @@ describe('createMemory() with supabase storage', () => {
     });
 
     const result = await mem.store('agent-1', 'Factory test fact');
-    expect(result.id).toMatch(/^mem_/);
+    expect(result.id).toMatch(/^[0-9a-f]{8}-/);
 
     const results = await mem.search('agent-1', 'Factory test');
     expect(results.length).toBe(1);

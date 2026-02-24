@@ -163,4 +163,3 @@ export { supabaseStorage } from './supabase-storage.mjs';
 export { markdownWritethrough, webhookWritethrough } from './writethrough.mjs';
 export { llmExtraction, passthroughExtraction } from './extraction.mjs';
 export { openaiChat, openclawChat } from './llm.mjs';
-export { openaiChat } from './llm.mjs';
