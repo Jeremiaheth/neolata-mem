@@ -1,6 +1,6 @@
 ---
 name: neolata-mem
-description: Graph-native memory engine for AI agents — hybrid vector+BM25 search, biological decay, Zettelkasten linking, conflict resolution. Zero infrastructure. npm install and go.
+description: Graph-native memory engine for AI agents — hybrid vector+keyword search, biological decay, Zettelkasten linking, conflict resolution. Zero infrastructure. npm install and go.
 metadata:
   openclaw:
     requires:
@@ -73,12 +73,12 @@ Supports **5+ embedding providers**: OpenAI, NVIDIA NIM, Ollama, Azure, Together
 
 ## Key Features
 
-### Hybrid Search (Vector + BM25)
-Combines semantic similarity with keyword matching. Configure the blend:
+### Hybrid Search (Vector + Keyword Fallback)
+Uses semantic similarity when embeddings are configured; falls back to substring keyword matching when they're not:
 ```javascript
-const mem = createMemory({
-  search: { vectorWeight: 0.7 },  // 70% vector, 30% BM25
-});
+// With embeddings → vector cosine similarity search
+// Without embeddings → case-insensitive keyword matching
+const results = await mem.search('agent', 'security vulnerabilities');
 ```
 
 ### Biological Decay
@@ -118,16 +118,19 @@ Hook into the memory lifecycle:
 ```javascript
 mem.on('store', ({ agent, content, id }) => { /* ... */ });
 mem.on('search', ({ agent, query, results }) => { /* ... */ });
-mem.on('decay', ({ archived, deleted }) => { /* ... */ });
+mem.on('decay', ({ archived, deleted, dryRun }) => { /* counts, not arrays */ });
 ```
 
-### SQLite Embedding Cache
-Re-indexing is near-instant after first embedding computation:
+### Bulk Ingestion with Fact Extraction
+Extract atomic facts from text using an LLM, then store each with A-MEM linking:
 ```javascript
 const mem = createMemory({
-  embeddings: { type: 'openai', apiKey: '...' },
-  cache: { enabled: true },  // SQLite cache for embeddings
+  embeddings: { type: 'openai', apiKey: process.env.OPENAI_API_KEY },
+  extraction: { type: 'llm', apiKey: process.env.OPENAI_API_KEY },
 });
+
+const result = await mem.ingest('agent', longText);
+// { total: 12, stored: 10, results: [...] }
 ```
 
 ## CLI
@@ -168,7 +171,7 @@ await mem.decay();
 | Feature | neolata-mem | Mem0 | OpenClaw memorySearch |
 |---------|:-----------:|:----:|:---------------------:|
 | Local-first (data stays on machine) | ✅ | ❌ | ✅ |
-| Hybrid search (vector + BM25) | ✅ | ❌ | ✅ |
+| Hybrid search (vector + keyword) | ✅ | ❌ | ✅ |
 | Memory decay | ✅ | ❌ | ❌ |
 | Memory graph / linking | ✅ | ❌ | ❌ |
 | Conflict resolution | ✅ | Partial | ❌ |
