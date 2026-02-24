@@ -10,7 +10,7 @@ metadata:
       - OPENAI_API_KEY        # For OpenAI embeddings/extraction
       - NVIDIA_API_KEY        # For NVIDIA NIM embeddings
       - SUPABASE_URL          # For Supabase storage backend
-      - SUPABASE_SERVICE_KEY  # For Supabase storage backend
+      - SUPABASE_KEY          # Supabase anon key (preferred) or service key
     homepage: https://github.com/Jeremiaheth/neolata-mem
     repository: https://github.com/Jeremiaheth/neolata-mem
 ---
@@ -223,6 +223,8 @@ neolata-mem includes hardening against common agent memory attack vectors:
 - **Cryptographic IDs**: `crypto.randomUUID()` — no predictable memory references
 - **Retry bounds**: Exponential backoff with max 3 retries on 429s
 - **Error surfacing**: Failed conflict detection returns `{ error }` instead of silent fallthrough
+
+**Supabase key guidance:** Prefer the anon key with Row Level Security (RLS) policies over the service role key. The service key bypasses RLS and grants full access to all stored memories. Only use it for admin/migration tasks.
 
 See the [full security section](docs/guide.md#security) for details.
 
