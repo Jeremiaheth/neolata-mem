@@ -1,0 +1,7 @@
+node_modules/
+neolata-mem-data/
+*.log
+*.docx
+~$*
+.env
+.DS_Store
