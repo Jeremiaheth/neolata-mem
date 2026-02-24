@@ -18,6 +18,31 @@ import { cosineSimilarity } from './embeddings.mjs';
 
 /** @typedef {{ id: string, agent: string, memory: string, category: string, importance: number, tags: string[], embedding: number[]|null, links: {id: string, similarity: number}[], created_at: string, updated_at: string, evolution?: object[], accessCount?: number }} Memory */
 
+// ── Keyword normalization helpers ──────────────────────────
+const STOP_WORDS = new Set([
+  'a','an','the','is','are','was','were','be','been','being',
+  'have','has','had','do','does','did','will','would','could',
+  'should','may','might','shall','can','need','dare','ought',
+  'to','of','in','for','on','with','at','by','from','as','into',
+  'through','during','before','after','above','below','between',
+  'and','but','or','nor','not','so','yet','both','either','neither',
+  'it','its','this','that','these','those','i','me','my','we','our',
+]);
+
+/**
+ * Tokenize text into normalized terms (lowercase, alphanumeric, no stop words, deduped).
+ * @param {string} text
+ * @returns {string[]}
+ */
+export function tokenize(text) {
+  return [...new Set(
+    text.toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length > 1 && !STOP_WORDS.has(w))
+  )];
+}
+
 export class MemoryGraph {
   /**
    * @param {object} opts
@@ -41,6 +66,11 @@ export class MemoryGraph {
     this.loaded = false;
     this._listeners = {};
     this._lastEvolveMs = 0;
+
+    /** @type {Map<string, Memory>} id → memory for O(1) lookups */
+    this._idIndex = new Map();
+    /** @type {Map<string, Set<string>>} token → Set<memory id> for keyword narrowing */
+    this._tokenIndex = new Map();
 
     this.config = {
       linkThreshold: config.linkThreshold ?? 0.5,
@@ -82,6 +112,39 @@ export class MemoryGraph {
     if (this.loaded) return;
     this.memories = await this.storage.load();
     this.loaded = true;
+    this._rebuildIndexes();
+  }
+
+  /** Rebuild id and token indexes from current memories. */
+  _rebuildIndexes() {
+    this._idIndex.clear();
+    this._tokenIndex.clear();
+    for (const mem of this.memories) {
+      this._indexMemory(mem);
+    }
+  }
+
+  /** Add a single memory to indexes. */
+  _indexMemory(mem) {
+    this._idIndex.set(mem.id, mem);
+    for (const token of tokenize(mem.memory)) {
+      if (!this._tokenIndex.has(token)) this._tokenIndex.set(token, new Set());
+      this._tokenIndex.get(token).add(mem.id);
+    }
+  }
+
+  /** Remove a memory from indexes. */
+  _deindexMemory(mem) {
+    this._idIndex.delete(mem.id);
+    for (const token of tokenize(mem.memory)) {
+      const set = this._tokenIndex.get(token);
+      if (set) { set.delete(mem.id); if (set.size === 0) this._tokenIndex.delete(token); }
+    }
+  }
+
+  /** Look up memory by id in O(1). */
+  _byId(id) {
+    return this._idIndex.get(id);
   }
 
   /** Persist current memories to storage. */
@@ -148,10 +211,11 @@ export class MemoryGraph {
     };
 
     this.memories.push(newMem);
+    this._indexMemory(newMem);
 
     // A-MEM: add backlinks to related memories
     for (const link of topLinks) {
-      const target = this.memories.find(m => m.id === link.id);
+      const target = this._byId(link.id);
       if (target) {
         if (!target.links) target.links = [];
         if (!target.links.find(l => l.id === id)) {
@@ -171,7 +235,7 @@ export class MemoryGraph {
       }
       // Update backlinked targets
       for (const link of topLinks) {
-        const target = this.memories.find(m => m.id === link.id);
+        const target = this._byId(link.id);
         if (target) await this.storage.upsert(target);
       }
     } else {
@@ -217,7 +281,7 @@ export class MemoryGraph {
       if (serverResults) {
         // Attach links from in-memory graph
         for (const r of serverResults) {
-          const mem = this.memories.find(m => m.id === r.id);
+          const mem = this._byId(r.id);
           r.links = mem?.links || [];
         }
         this.emit('search', { agent, query, resultCount: serverResults.length });
@@ -230,15 +294,60 @@ export class MemoryGraph {
 
     let results;
     if (!queryEmb) {
-      // Keyword fallback when no embeddings
-      const q = query.toLowerCase();
-      results = candidates
-        .filter(m => m.memory.toLowerCase().includes(q))
-        .slice(0, limit)
-        .map(m => ({ ...m, score: 1.0, embedding: undefined }));
+      // Keyword fallback: tokenized matching with inverted index
+      const queryTokens = tokenize(query);
+      if (queryTokens.length === 0) {
+        // Fall back to simple substring match if all tokens are stop words
+        const q = query.toLowerCase();
+        results = candidates
+          .filter(m => m.memory.toLowerCase().includes(q))
+          .slice(0, limit)
+          .map(m => ({ ...m, score: 1.0, embedding: undefined }));
+      } else {
+        // Score by fraction of query tokens matched
+        const candidateIds = agent ? new Set(candidates.map(m => m.id)) : null;
+        results = [];
+        const scored = new Map(); // id → matched token count
+        for (const token of queryTokens) {
+          const ids = this._tokenIndex.get(token);
+          if (!ids) continue;
+          for (const id of ids) {
+            if (candidateIds && !candidateIds.has(id)) continue;
+            scored.set(id, (scored.get(id) || 0) + 1);
+          }
+        }
+        for (const [id, count] of scored) {
+          const mem = this._byId(id);
+          if (mem) results.push({ ...mem, score: count / queryTokens.length, embedding: undefined });
+        }
+        results.sort((a, b) => b.score - a.score || b.importance - a.importance);
+        results = results.slice(0, limit);
+      }
     } else {
-      results = candidates
-        .filter(m => m.embedding)
+      // Candidate narrowing: if >500 memories with embeddings, use token index to pre-filter
+      let embCandidates = candidates.filter(m => m.embedding);
+      if (embCandidates.length > 500 && !this.storage.search) {
+        const queryTokens = tokenize(query);
+        if (queryTokens.length > 0) {
+          const narrowed = new Set();
+          for (const token of queryTokens) {
+            const ids = this._tokenIndex.get(token);
+            if (ids) for (const id of ids) narrowed.add(id);
+          }
+          if (narrowed.size > 0) {
+            // Keep token-matched candidates + random sample of the rest for recall safety
+            const matched = embCandidates.filter(m => narrowed.has(m.id));
+            const rest = embCandidates.filter(m => !narrowed.has(m.id));
+            const sampleSize = Math.min(rest.length, Math.max(100, limit * 5));
+            // Deterministic sample: take evenly spaced
+            const step = rest.length / sampleSize;
+            const sample = [];
+            for (let i = 0; i < sampleSize; i++) sample.push(rest[Math.floor(i * step)]);
+            embCandidates = [...matched, ...sample];
+          }
+        }
+      }
+      results = embCandidates
         .map(m => ({ ...m, score: cosineSimilarity(queryEmb, m.embedding), embedding: undefined }))
         .filter(m => m.score >= minSimilarity)
         .sort((a, b) => b.score - a.score)
@@ -259,6 +368,176 @@ export class MemoryGraph {
   }
 
   // ══════════════════════════════════════════════════════════
+  // BATCH — Amortized bulk operations
+  // ══════════════════════════════════════════════════════════
+
+  /**
+   * Store multiple memories in a single batch. Amortizes embedding calls and I/O.
+   * @param {string} agent
+   * @param {Array<{text: string, category?: string, importance?: number, tags?: string[]}>} items
+   * @param {object} [opts]
+   * @param {number} [opts.embeddingBatchSize=64] - Batch size for embedding calls
+   * @returns {Promise<{total: number, stored: number, results: Array<{id: string, links: number}>}>}
+   */
+  async storeMany(agent, items, { embeddingBatchSize = 64 } = {}) {
+    if (!agent || typeof agent !== 'string') throw new Error('agent must be a non-empty string');
+    if (agent.length > this.config.maxAgentLength) throw new Error(`agent exceeds max length (${this.config.maxAgentLength})`);
+    if (!/^[a-zA-Z0-9_\-. ]+$/.test(agent)) throw new Error('agent contains invalid characters');
+    if (!Array.isArray(items) || items.length === 0) throw new Error('items must be a non-empty array');
+
+    await this.init();
+
+    if (this.memories.length + items.length > this.config.maxMemories) {
+      throw new Error(`Batch would exceed memory limit (${this.config.maxMemories}). Run decay() or increase maxMemories.`);
+    }
+
+    // Validate all items first
+    const texts = items.map((item, i) => {
+      const text = typeof item === 'string' ? item : item.text;
+      if (!text || typeof text !== 'string') throw new Error(`items[${i}].text must be a non-empty string`);
+      if (text.length > this.config.maxMemoryLength) throw new Error(`items[${i}].text exceeds max length`);
+      return text;
+    });
+
+    // Batch embed all texts
+    const allEmbeddings = [];
+    for (let i = 0; i < texts.length; i += embeddingBatchSize) {
+      const batch = texts.slice(i, i + embeddingBatchSize);
+      const embeddings = await this.embeddings.embed(...batch);
+      allEmbeddings.push(...embeddings);
+    }
+
+    const results = [];
+    const now = new Date().toISOString();
+
+    for (let i = 0; i < items.length; i++) {
+      const item = typeof items[i] === 'string' ? { text: items[i] } : items[i];
+      const embedding = allEmbeddings[i];
+
+      // Find related memories for auto-linking
+      const related = [];
+      if (embedding) {
+        for (const existing of this.memories) {
+          if (!existing.embedding) continue;
+          const sim = cosineSimilarity(embedding, existing.embedding);
+          if (sim > this.config.linkThreshold) {
+            related.push({ id: existing.id, similarity: sim, agent: existing.agent });
+          }
+        }
+        related.sort((a, b) => b.similarity - a.similarity);
+      }
+      const topLinks = related.slice(0, this.config.maxLinksPerMemory);
+
+      const id = this.storage.genId();
+      const newMem = {
+        id, agent, memory: item.text || items[i],
+        category: item.category || 'fact',
+        importance: item.importance ?? 0.7,
+        tags: item.tags || [],
+        embedding,
+        links: topLinks.map(l => ({ id: l.id, similarity: l.similarity })),
+        created_at: now, updated_at: now,
+      };
+
+      this.memories.push(newMem);
+      this._indexMemory(newMem);
+
+      // Backlinks
+      for (const link of topLinks) {
+        const target = this._byId(link.id);
+        if (target) {
+          if (!target.links) target.links = [];
+          if (!target.links.find(l => l.id === id)) {
+            target.links.push({ id, similarity: link.similarity });
+          }
+          target.updated_at = now;
+        }
+      }
+
+      results.push({ id, links: topLinks.length });
+      this.emit('store', { id, agent, content: newMem.memory, category: newMem.category, importance: newMem.importance, links: topLinks.length });
+    }
+
+    // Single save at the end
+    if (this.storage.incremental) {
+      for (const r of results) {
+        const mem = this._byId(r.id);
+        if (mem) await this.storage.upsert(mem);
+      }
+    } else {
+      await this.save();
+    }
+
+    return { total: items.length, stored: results.length, results };
+  }
+
+  /**
+   * Search for multiple queries in a single batch. Amortizes embedding calls.
+   * @param {string|null} agent - Agent filter (null = all)
+   * @param {string[]} queries
+   * @param {object} [opts]
+   * @param {number} [opts.limit=10] - Per-query result limit
+   * @param {number} [opts.minSimilarity=0]
+   * @returns {Promise<Array<{query: string, results: Array<Memory & {score: number}>}>>}
+   */
+  async searchMany(agent, queries, { limit = 10, minSimilarity = 0 } = {}) {
+    if (!Array.isArray(queries) || queries.length === 0) throw new Error('queries must be a non-empty array');
+
+    await this.init();
+
+    // Batch embed all queries
+    const embedFn = this.embeddings.embedQuery || this.embeddings.embed;
+    const allEmbeddings = await embedFn.call(this.embeddings, ...queries);
+
+    let candidates = this.memories;
+    if (agent) candidates = candidates.filter(m => m.agent === agent);
+
+    const output = [];
+    for (let i = 0; i < queries.length; i++) {
+      const queryEmb = allEmbeddings[i];
+      let results;
+
+      if (!queryEmb) {
+        const queryTokens = tokenize(queries[i]);
+        if (queryTokens.length === 0) {
+          const q = queries[i].toLowerCase();
+          results = candidates.filter(m => m.memory.toLowerCase().includes(q))
+            .slice(0, limit).map(m => ({ ...m, score: 1.0, embedding: undefined }));
+        } else {
+          const candidateIds = agent ? new Set(candidates.map(m => m.id)) : null;
+          const scored = new Map();
+          for (const token of queryTokens) {
+            const ids = this._tokenIndex.get(token);
+            if (!ids) continue;
+            for (const id of ids) {
+              if (candidateIds && !candidateIds.has(id)) continue;
+              scored.set(id, (scored.get(id) || 0) + 1);
+            }
+          }
+          results = [];
+          for (const [id, count] of scored) {
+            const mem = this._byId(id);
+            if (mem) results.push({ ...mem, score: count / queryTokens.length, embedding: undefined });
+          }
+          results.sort((a, b) => b.score - a.score || b.importance - a.importance);
+          results = results.slice(0, limit);
+        }
+      } else {
+        results = candidates.filter(m => m.embedding)
+          .map(m => ({ ...m, score: cosineSimilarity(queryEmb, m.embedding), embedding: undefined }))
+          .filter(m => m.score >= minSimilarity)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, limit);
+      }
+
+      this.emit('search', { agent, query: queries[i], resultCount: results.length });
+      output.push({ query: queries[i], results });
+    }
+
+    return output;
+  }
+
+  // ══════════════════════════════════════════════════════════
   // LINKS — Graph queries
   // ══════════════════════════════════════════════════════════
 
@@ -268,11 +547,11 @@ export class MemoryGraph {
    */
   async links(memoryId) {
     await this.init();
-    const mem = this.memories.find(m => m.id === memoryId);
+    const mem = this._byId(memoryId);
     if (!mem) return null;
 
     const linked = (mem.links || []).map(link => {
-      const target = this.memories.find(m => m.id === link.id);
+      const target = this._byId(link.id);
       return {
         id: link.id,
         similarity: link.similarity,
@@ -292,7 +571,7 @@ export class MemoryGraph {
    */
   async traverse(startId, maxHops = 2) {
     await this.init();
-    const start = this.memories.find(m => m.id === startId);
+    const start = this._byId(startId);
     if (!start) return null;
 
     const visited = new Map();
@@ -302,7 +581,7 @@ export class MemoryGraph {
       const { id, hop, similarity } = queue.shift();
       if (visited.has(id)) continue;
 
-      const mem = this.memories.find(m => m.id === id);
+      const mem = this._byId(id);
       if (!mem) continue;
 
       visited.set(id, {
@@ -364,7 +643,7 @@ export class MemoryGraph {
         const agentCounts = {};
         for (const c of cluster) {
           agentCounts[c.agent] = (agentCounts[c.agent] || 0) + 1;
-          const full = this.memories.find(m => m.id === c.id);
+          const full = this._byId(c.id);
           for (const tag of (full?.tags || [])) tagCounts[tag] = (tagCounts[tag] || 0) + 1;
         }
         const topTags = Object.entries(tagCounts).sort((a, b) => b[1] - a[1]).slice(0, 5).map(e => e[0]);
@@ -383,7 +662,7 @@ export class MemoryGraph {
    */
   async path(idA, idB) {
     await this.init();
-    if (!this.memories.find(m => m.id === idA) || !this.memories.find(m => m.id === idB)) return null;
+    if (!this._byId(idA) || !this._byId(idB)) return null;
 
     const visited = new Map();
     const queue = [idA];
@@ -396,14 +675,14 @@ export class MemoryGraph {
         const path = [];
         let current = idB;
         while (current !== null) {
-          const mem = this.memories.find(m => m.id === current);
+          const mem = this._byId(current);
           path.unshift({ id: current, memory: mem?.memory || '?', agent: mem?.agent || '?', category: mem?.category || '?' });
           current = visited.get(current);
         }
         return { found: true, hops: path.length - 1, path };
       }
 
-      const mem = this.memories.find(m => m.id === id);
+      const mem = this._byId(id);
       if (!mem) continue;
       for (const link of (mem.links || [])) {
         if (!visited.has(link.id)) {
@@ -518,6 +797,7 @@ export class MemoryGraph {
       await this.storage.saveArchive(archived);
 
       const removeIds = new Set([...toArchive, ...toDelete].map(m => m.id));
+      for (const mem of [...toArchive, ...toDelete]) this._deindexMemory(mem);
       this.memories = this.memories.filter(m => !removeIds.has(m.id));
 
       for (const mem of this.memories) {
@@ -546,7 +826,7 @@ export class MemoryGraph {
    */
   async reinforce(memoryId, boost = 0.1) {
     await this.init();
-    const mem = this.memories.find(m => m.id === memoryId);
+    const mem = this._byId(memoryId);
     if (!mem) return null;
 
     const oldImportance = mem.importance;
@@ -672,7 +952,7 @@ Respond ONLY with a JSON object:
     // Archive conflicting memories
     for (const conflict of (conflicts.conflicts || [])) {
       if (conflict.memoryId) {
-        const old = this.memories.find(m => m.id === conflict.memoryId);
+        const old = this._byId(conflict.memoryId);
         if (old) {
           const archived = await this.storage.loadArchive();
           archived.push({ ...old, embedding: undefined, archived_at: new Date().toISOString(), archived_reason: `Superseded: ${conflict.reason}` });
@@ -680,6 +960,7 @@ Respond ONLY with a JSON object:
           if (this.storage.incremental) {
             await this.storage.remove(conflict.memoryId);
           }
+          this._deindexMemory(old);
           this.memories = this.memories.filter(m => m.id !== conflict.memoryId);
           actions.push({ type: 'archived', id: conflict.memoryId, reason: conflict.reason, old: old.memory });
         }
@@ -689,7 +970,7 @@ Respond ONLY with a JSON object:
     // Update existing memories in-place
     for (const update of (conflicts.updates || [])) {
       if (update.memoryId) {
-        const existing = this.memories.find(m => m.id === update.memoryId);
+        const existing = this._byId(update.memoryId);
         if (existing) {
           const oldContent = existing.memory;
           existing.memory = text;
@@ -741,12 +1022,12 @@ Respond ONLY with a JSON object:
       seen.add(r.id);
       contextMems.push({ ...r, source: 'direct' });
 
-      const mem = this.memories.find(m => m.id === r.id);
+      const mem = this._byId(r.id);
       if (mem) {
         for (const link of (mem.links || []).slice(0, 3)) {
           if (seen.has(link.id)) continue;
           seen.add(link.id);
-          const linked = this.memories.find(m => m.id === link.id);
+          const linked = this._byId(link.id);
           if (linked) {
             contextMems.push({
               id: linked.id, memory: linked.memory, agent: linked.agent,
