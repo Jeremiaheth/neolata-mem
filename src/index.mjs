@@ -153,5 +153,6 @@ export { MemoryGraph } from './graph.mjs';
 export { openaiEmbeddings, noopEmbeddings, cosineSimilarity } from './embeddings.mjs';
 export { jsonStorage, memoryStorage } from './storage.mjs';
 export { supabaseStorage } from './supabase-storage.mjs';
+export { markdownWritethrough, webhookWritethrough } from './writethrough.mjs';
 export { llmExtraction, passthroughExtraction } from './extraction.mjs';
 export { openaiChat } from './llm.mjs';

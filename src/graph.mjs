@@ -206,7 +206,9 @@ export class MemoryGraph {
   async search(agent, query, { limit = 10, minSimilarity = 0 } = {}) {
     await this.init();
 
-    const embedResult = await this.embeddings.embed(query);
+    // Use embedQuery for asymmetric models (NIM), fall back to embed
+    const embedFn = this.embeddings.embedQuery || this.embeddings.embed;
+    const embedResult = await embedFn.call(this.embeddings, query);
     const queryEmb = embedResult[0];
 
     // Try server-side search if storage supports it
