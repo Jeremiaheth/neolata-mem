@@ -6,7 +6,10 @@ metadata:
     requires:
       bins:
         - node
-    primaryEnv: OPENAI_API_KEY
+    optionalEnv:
+      - OPENAI_API_KEY  # Only needed for semantic/embedding search mode
+    homepage: https://github.com/Jeremiaheth/neolata-mem
+    repository: https://github.com/Jeremiaheth/neolata-mem
 ---
 
 # neolata-mem — Agent Memory Engine
@@ -14,7 +17,8 @@ metadata:
 Graph-native memory for AI agents with hybrid search, biological decay, and zero infrastructure.
 
 **npm package:** `@jeremiaheth/neolata-mem`
-**License:** MIT | **Tests:** 28/28 passing | **Node:** ≥18
+**Repository:** [github.com/Jeremiaheth/neolata-mem](https://github.com/Jeremiaheth/neolata-mem)
+**License:** MIT | **Tests:** 38/38 passing | **Node:** ≥18
 
 ## When to Use This Skill
 
