@@ -60,6 +60,21 @@ describe('MemoryGraph incremental storage', () => {
     expect(saveCalls).toBe(0);
   });
 
+  it('search() tries storage.search() first when available', async () => {
+    await graph.store('a1', 'Delegated search test');
+
+    // Spy: track if storage.search was called
+    let searchCalled = false;
+    const origSearch = graph.storage.search;
+    graph.storage.search = async (...args) => {
+      searchCalled = true;
+      return origSearch(...args);
+    };
+
+    await graph.search('a1', 'Delegated');
+    expect(searchCalled).toBe(true);
+  });
+
   it('data is still accessible after incremental store', async () => {
     await graph.store('a1', 'Accessible fact');
 

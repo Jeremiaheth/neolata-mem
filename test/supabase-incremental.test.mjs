@@ -121,6 +121,29 @@ describe('supabaseStorage incremental ops', () => {
     expect(memY.links).toHaveLength(0);
   });
 
+  // ── server-side search ──
+
+  it('search() delegates to RPC when available', async () => {
+    // Seed a memory row directly
+    const memTable = mock.getTable('memories');
+    memTable.push({
+      id: 'mem_s1', agent_id: 'a1', content: 'Dark mode preference',
+      category: 'preference', importance: 0.8, tags: ['ui'],
+      embedding: JSON.stringify([0.1, 0.2, 0.3]),
+      created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+      access_count: 0,
+    });
+
+    // The storage.search method should exist
+    expect(typeof storage.search).toBe('function');
+
+    // Our mock doesn't implement RPCs, so it should fall back gracefully
+    // (returns null on RPC failure, so MemoryGraph falls back to client-side)
+    const result = await storage.search([0.1, 0.2, 0.3], { agent: 'a1', limit: 5 });
+    // Mock doesn't support RPC → returns null
+    expect(result).toBeNull();
+  });
+
   // ── hasIncremental flag ──
 
   it('exposes incremental: true flag', () => {

@@ -209,6 +209,20 @@ export class MemoryGraph {
     const embedResult = await this.embeddings.embed(query);
     const queryEmb = embedResult[0];
 
+    // Try server-side search if storage supports it
+    if (queryEmb && this.storage.search) {
+      const serverResults = await this.storage.search(queryEmb, { agent, limit, minSimilarity });
+      if (serverResults) {
+        // Attach links from in-memory graph
+        for (const r of serverResults) {
+          const mem = this.memories.find(m => m.id === r.id);
+          r.links = mem?.links || [];
+        }
+        this.emit('search', { agent, query, resultCount: serverResults.length });
+        return serverResults;
+      }
+    }
+
     let candidates = this.memories;
     if (agent) candidates = candidates.filter(m => m.agent === agent);
 

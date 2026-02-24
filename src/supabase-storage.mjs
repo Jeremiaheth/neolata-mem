@@ -214,6 +214,41 @@ export function supabaseStorage({
     incremental: true,
 
     /**
+     * Server-side vector search via Supabase RPC.
+     * Returns null if RPC is not available (caller falls back to client-side).
+     * @param {number[]} embedding - Query embedding vector
+     * @param {object} opts
+     * @param {string|null} [opts.agent] - Filter by agent (null = all)
+     * @param {number} [opts.limit=10]
+     * @param {number} [opts.minSimilarity=0.3]
+     * @returns {Promise<Array|null>} Results or null if RPC unavailable
+     */
+    async search(embedding, { agent = null, limit = 10, minSimilarity = 0.3 } = {}) {
+      try {
+        const rpcName = agent ? 'search_memories_semantic' : 'search_memories_global';
+        const body = agent
+          ? { agent, query_embedding: JSON.stringify(embedding), match_count: limit, min_similarity: minSimilarity }
+          : { query_embedding: JSON.stringify(embedding), match_count: limit, min_similarity: minSimilarity };
+        const results = await request('POST', `/rest/v1/rpc/${rpcName}`, body);
+        if (!results || !Array.isArray(results)) return null;
+        return results.map(r => ({
+          id: r.id,
+          agent: r.agent_id,
+          memory: r.content,
+          category: r.category,
+          importance: r.importance,
+          tags: r.tags || [],
+          created_at: r.created_at,
+          updated_at: r.updated_at,
+          score: r.similarity,
+        }));
+      } catch {
+        // RPC not available — return null so caller falls back to client-side
+        return null;
+      }
+    },
+
+    /**
      * Insert or update a single memory.
      * Uses Supabase upsert (on conflict: update).
      */
