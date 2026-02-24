@@ -22,7 +22,7 @@ import { openaiEmbeddings, noopEmbeddings } from './embeddings.mjs';
 import { jsonStorage, memoryStorage } from './storage.mjs';
 import { supabaseStorage } from './supabase-storage.mjs';
 import { llmExtraction, passthroughExtraction } from './extraction.mjs';
-import { openaiChat } from './llm.mjs';
+import { openaiChat, openclawChat } from './llm.mjs';
 
 /**
  * Create a configured MemoryGraph instance.
@@ -101,6 +101,7 @@ export function createMemory(opts = {}) {
         model: embOpts.model || 'text-embedding-3-small',
         baseUrl: embOpts.baseUrl || 'https://api.openai.com/v1',
         extraBody: embOpts.extraBody || {},
+        nimInputType: embOpts.nimInputType || false,
       });
       break;
     case 'noop':
@@ -137,6 +138,12 @@ export function createMemory(opts = {}) {
       model: llmOpts.model,
       baseUrl: llmOpts.baseUrl,
     });
+  } else if (llmOpts.type === 'openclaw') {
+    llm = openclawChat({
+      model: llmOpts.model,
+      port: llmOpts.port,
+      token: llmOpts.token,
+    });
   }
 
   return new MemoryGraph({
@@ -155,4 +162,5 @@ export { jsonStorage, memoryStorage } from './storage.mjs';
 export { supabaseStorage } from './supabase-storage.mjs';
 export { markdownWritethrough, webhookWritethrough } from './writethrough.mjs';
 export { llmExtraction, passthroughExtraction } from './extraction.mjs';
+export { openaiChat, openclawChat } from './llm.mjs';
 export { openaiChat } from './llm.mjs';

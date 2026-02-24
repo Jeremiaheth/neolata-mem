@@ -3,6 +3,29 @@
  * Must implement: chat(prompt) → string
  */
 
+// ─── OpenClaw Gateway Provider ──────────────────────────────
+/**
+ * Use OpenClaw's gateway as the LLM provider.
+ * The gateway exposes an OpenAI-compatible API at localhost:3577.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.model='haiku'] - Model alias or full provider/model
+ * @param {number} [opts.port=3577] - Gateway port
+ * @param {string} [opts.token] - Gateway token (reads OPENCLAW_GATEWAY_TOKEN env if not set)
+ * @param {number} [opts.maxTokens=1000]
+ * @param {number} [opts.temperature=0.1]
+ */
+export function openclawChat({ model = 'haiku', port = 3577, token, maxTokens = 1000, temperature = 0.1 } = {}) {
+  const apiKey = token || process.env.OPENCLAW_GATEWAY_TOKEN || 'openclaw';
+  return openaiChat({
+    apiKey,
+    model,
+    baseUrl: `http://localhost:${port}/v1`,
+    maxTokens,
+    temperature,
+  });
+}
+
 // ─── OpenAI-Compatible Chat Provider ────────────────────────
 /**
  * @param {object} opts
