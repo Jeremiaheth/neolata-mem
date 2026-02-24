@@ -776,20 +776,47 @@ LLM output is structurally validated:
 - Category whitelisting (only valid categories accepted)
 - Length caps on extracted facts
 
+### URL & SSRF Protection
+
+All provider URLs (embeddings, LLM, extraction, webhooks) are validated at construction time via `validateBaseUrl()`:
+
+- **Cloud metadata blocked**: `169.254.169.254` and `metadata.google.internal` are always rejected
+- **Private IPs blocked by default**: `10.x`, `172.16-31.x`, `192.168.x` ranges require `allowPrivate: true`
+- **Protocol enforcement**: Only `http://` and `https://` accepted (no `file://`, `ftp://`, etc.)
+- **Localhost always allowed**: Local dev servers (Ollama, OpenClaw gateway) work without flags
+
+```js
+import { validateBaseUrl } from '@jeremiaheth/neolata-mem';
+
+// Use in custom providers
+validateBaseUrl(url, { allowPrivate: true, requireHttps: true });
+```
+
+### Supabase Security
+
+When using the Supabase backend:
+
+- **PostgREST injection prevention**: All IDs passed to `remove()`, `upsertLinks()`, and `removeLinks()` are validated as UUIDs before being interpolated into query strings
+- **Error sanitization**: API error text is scrubbed of Bearer tokens, JWTs, and API keys before surfacing
+- **Rate limit handling**: 429 responses trigger automatic retry with exponential backoff (max 3 retries)
+- **Safe save()**: Uses upsert + stale-ID cleanup instead of delete-all + re-insert — no data loss on crash mid-save
+- **Vector dimension check**: `cosineSimilarity()` throws on mismatched vector dimensions instead of silently computing garbage
+
 ### Data Safety
 
 - **Atomic writes**: JSON storage writes to a temp file then renames, preventing corruption from concurrent access or crashes mid-write.
-- **Path traversal guard**: Custom `filename` in `jsonStorage()` is resolved and checked to ensure it doesn't escape the storage directory.
+- **Path traversal guard**: Custom `filename` in `jsonStorage()` and `markdownWritethrough()` is resolved and checked to ensure it doesn't escape the target directory.
 - **Cryptographic IDs**: Memory IDs use `crypto.randomUUID()` — not predictable.
 - **Retry bounds**: Embedding API 429 retries are capped at 3 with exponential backoff.
 - **Evolve rate limiting**: `evolve()` enforces a minimum interval (default 1s) between calls to prevent API quota burn.
 - **Error surfacing**: Failed conflict detection returns `{ error: '...' }` so callers know detection was attempted but failed (instead of silently treating everything as novel).
+- **Port validation**: `openclawChat()` validates port range (1-65535) and uses `127.0.0.1` instead of `localhost`.
 
 ### Trust Model
 
 neolata-mem trusts the local filesystem. All memories (including embedding vectors) are stored in plaintext JSON. Anyone with read access to the storage directory can read all agent memories. Embedding vectors can be used to approximate original text with modern inversion attacks — treat them as sensitive.
 
-For production deployments with multiple users, use a database-backed storage backend with proper access controls.
+For production deployments with multiple users, use the Supabase backend with proper Row Level Security (RLS) policies.
 
 ---
 

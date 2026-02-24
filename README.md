@@ -302,12 +302,15 @@ neolata-mem includes several hardening measures:
 
 - **Input validation**: Agent names (alphanumeric, max 64 chars), memory text (max 10KB), bounded total memory count (default 50K)
 - **Prompt injection mitigation**: All user content is XML-fenced in LLM prompts with explicit instruction boundaries. LLM output is structurally validated (type checks, index bounds, category whitelists)
+- **SSRF protection**: All provider URLs validated via `validateBaseUrl()` — blocks cloud metadata endpoints, private IP ranges (configurable), non-HTTP protocols
+- **Supabase hardening**: UUID validation on all query params (prevents PostgREST injection), error text sanitized (strips tokens/keys), safe upsert-based save (no data loss on crash), automatic 429 retry with backoff
 - **Atomic writes**: JSON storage uses write-to-temp + rename to prevent corruption from concurrent access
+- **Path traversal guards**: Storage directories and write-through paths validated with `resolve()` + prefix checks
 - **Cryptographic IDs**: Memory IDs use `crypto.randomUUID()` (not `Math.random`)
-- **Retry bounds**: Embedding API retries are capped at 3 with exponential backoff (no infinite loops)
+- **Retry bounds**: Embedding and Supabase API retries are capped at 3 with exponential backoff (no infinite loops)
 - **Error surfacing**: Failed conflict detection returns `{ error }` instead of silently proceeding
 
-**Trust model**: neolata-mem trusts the filesystem. Anyone with read access to the storage directory can read all memories (including embeddings, which can approximate original text). Protect your data directory accordingly.
+**Trust model**: For JSON storage, neolata-mem trusts the filesystem — protect your data directory. For Supabase, use Row Level Security (RLS) policies. Embedding vectors can approximate original text via inversion attacks — treat them as sensitive.
 
 ## Documentation
 
