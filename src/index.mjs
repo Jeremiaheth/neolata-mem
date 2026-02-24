@@ -20,6 +20,7 @@
 import { MemoryGraph } from './graph.mjs';
 import { openaiEmbeddings, noopEmbeddings } from './embeddings.mjs';
 import { jsonStorage, memoryStorage } from './storage.mjs';
+import { supabaseStorage } from './supabase-storage.mjs';
 import { llmExtraction, passthroughExtraction } from './extraction.mjs';
 import { openaiChat } from './llm.mjs';
 
@@ -29,8 +30,14 @@ import { openaiChat } from './llm.mjs';
  * @param {object} [opts] - Configuration (all optional — zero-config by default)
  *
  * @param {object} [opts.storage] - Storage backend
- * @param {'json'|'memory'} [opts.storage.type='json']
+ * @param {'json'|'memory'|'supabase'} [opts.storage.type='json']
  * @param {string} [opts.storage.dir] - Directory for JSON storage
+ * @param {string} [opts.storage.url] - Supabase project URL (for type='supabase')
+ * @param {string} [opts.storage.key] - Supabase API key (for type='supabase')
+ * @param {string} [opts.storage.table] - Supabase table name (default: 'memories')
+ * @param {string} [opts.storage.linksTable] - Supabase links table (default: 'memory_links')
+ * @param {string} [opts.storage.archiveTable] - Supabase archive table (default: 'memories_archive')
+ * @param {Function} [opts.storage.fetch] - Custom fetch for testing
  *
  * @param {object} [opts.embeddings] - Embedding provider
  * @param {'openai'|'noop'} [opts.embeddings.type='noop'] - Provider type
@@ -67,6 +74,16 @@ export function createMemory(opts = {}) {
   switch (storageOpts.type) {
     case 'memory':
       storage = memoryStorage();
+      break;
+    case 'supabase':
+      storage = supabaseStorage({
+        url: storageOpts.url,
+        key: storageOpts.key,
+        table: storageOpts.table,
+        linksTable: storageOpts.linksTable,
+        archiveTable: storageOpts.archiveTable,
+        fetch: storageOpts.fetch,
+      });
       break;
     case 'json':
     default:
@@ -135,5 +152,6 @@ export function createMemory(opts = {}) {
 export { MemoryGraph } from './graph.mjs';
 export { openaiEmbeddings, noopEmbeddings, cosineSimilarity } from './embeddings.mjs';
 export { jsonStorage, memoryStorage } from './storage.mjs';
+export { supabaseStorage } from './supabase-storage.mjs';
 export { llmExtraction, passthroughExtraction } from './extraction.mjs';
 export { openaiChat } from './llm.mjs';

@@ -1,0 +1,129 @@
+import { describe, it, expect, beforeEach } from 'vitest';
+import { supabaseStorage } from '../src/supabase-storage.mjs';
+import { createMockSupabase } from './mock-supabase.mjs';
+
+/**
+ * Tests for incremental Supabase operations (upsert, remove, upsertLinks, removeLinks).
+ * These bypass the full save() cycle for efficiency.
+ */
+
+describe('supabaseStorage incremental ops', () => {
+  let mock, storage;
+
+  beforeEach(() => {
+    mock = createMockSupabase();
+    storage = supabaseStorage({
+      url: 'https://test.supabase.co',
+      key: 'test-key',
+      fetch: mock.fetch,
+    });
+  });
+
+  // ── upsert ──
+
+  it('upsert() inserts a new memory', async () => {
+    const mem = {
+      id: 'mem_1', agent: 'a1', memory: 'Test', category: 'fact',
+      importance: 0.7, tags: [], embedding: [0.1, 0.2],
+      links: [], created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+    };
+    await storage.upsert(mem);
+    const loaded = await storage.load();
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].id).toBe('mem_1');
+    expect(loaded[0].memory).toBe('Test');
+  });
+
+  it('upsert() updates an existing memory', async () => {
+    const mem = {
+      id: 'mem_1', agent: 'a1', memory: 'Version 1', category: 'fact',
+      importance: 0.5, tags: [], embedding: null,
+      links: [], created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+    };
+    await storage.upsert(mem);
+
+    const updated = { ...mem, memory: 'Version 2', importance: 0.9 };
+    await storage.upsert(updated);
+
+    const loaded = await storage.load();
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].memory).toBe('Version 2');
+    expect(loaded[0].importance).toBe(0.9);
+  });
+
+  // ── remove ──
+
+  it('remove() deletes a memory by id', async () => {
+    const mem = {
+      id: 'mem_del', agent: 'a1', memory: 'Gone', category: 'fact',
+      importance: 0.5, tags: [], embedding: null,
+      links: [], created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+    };
+    await storage.upsert(mem);
+    expect((await storage.load())).toHaveLength(1);
+
+    await storage.remove('mem_del');
+    expect((await storage.load())).toHaveLength(0);
+  });
+
+  it('remove() is a no-op for non-existent id', async () => {
+    // Should not throw
+    await storage.remove('mem_nonexistent');
+  });
+
+  // ── upsertLinks ──
+
+  it('upsertLinks() inserts link rows', async () => {
+    // Set up two memories first
+    await storage.upsert({
+      id: 'mem_a', agent: 'a1', memory: 'A', category: 'fact',
+      importance: 0.5, tags: [], embedding: null, links: [],
+      created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+    });
+    await storage.upsert({
+      id: 'mem_b', agent: 'a1', memory: 'B', category: 'fact',
+      importance: 0.5, tags: [], embedding: null, links: [],
+      created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+    });
+
+    await storage.upsertLinks('mem_a', [{ id: 'mem_b', similarity: 0.85 }]);
+
+    // Load and check links are attached
+    const loaded = await storage.load();
+    const memA = loaded.find(m => m.id === 'mem_a');
+    const memB = loaded.find(m => m.id === 'mem_b');
+    // Bidirectional
+    expect(memA.links.some(l => l.id === 'mem_b')).toBe(true);
+    expect(memB.links.some(l => l.id === 'mem_a')).toBe(true);
+  });
+
+  // ── removeLinks ──
+
+  it('removeLinks() removes all links for a memory', async () => {
+    await storage.upsert({
+      id: 'mem_x', agent: 'a1', memory: 'X', category: 'fact',
+      importance: 0.5, tags: [], embedding: null, links: [],
+      created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+    });
+    await storage.upsert({
+      id: 'mem_y', agent: 'a1', memory: 'Y', category: 'fact',
+      importance: 0.5, tags: [], embedding: null, links: [],
+      created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+    });
+    await storage.upsertLinks('mem_x', [{ id: 'mem_y', similarity: 0.9 }]);
+
+    await storage.removeLinks('mem_x');
+
+    const loaded = await storage.load();
+    const memX = loaded.find(m => m.id === 'mem_x');
+    const memY = loaded.find(m => m.id === 'mem_y');
+    expect(memX.links).toHaveLength(0);
+    expect(memY.links).toHaveLength(0);
+  });
+
+  // ── hasIncremental flag ──
+
+  it('exposes incremental: true flag', () => {
+    expect(storage.incremental).toBe(true);
+  });
+});

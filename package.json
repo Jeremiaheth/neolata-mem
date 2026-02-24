@@ -9,6 +9,7 @@
     "./graph": "./src/graph.mjs",
     "./embeddings": "./src/embeddings.mjs",
     "./storage": "./src/storage.mjs",
+    "./supabase-storage": "./src/supabase-storage.mjs",
     "./extraction": "./src/extraction.mjs",
     "./llm": "./src/llm.mjs"
   },

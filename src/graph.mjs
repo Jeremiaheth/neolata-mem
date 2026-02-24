@@ -163,7 +163,20 @@ export class MemoryGraph {
       this.emit('link', { sourceId: id, targetId: link.id, similarity: link.similarity });
     }
 
-    await this.save();
+    // Persist: use incremental ops if available, otherwise full save
+    if (this.storage.incremental) {
+      await this.storage.upsert(newMem);
+      if (topLinks.length) {
+        await this.storage.upsertLinks(id, topLinks.map(l => ({ id: l.id, similarity: l.similarity })));
+      }
+      // Update backlinked targets
+      for (const link of topLinks) {
+        const target = this.memories.find(m => m.id === link.id);
+        if (target) await this.storage.upsert(target);
+      }
+    } else {
+      await this.save();
+    }
 
     // Emit store event
     this.emit('store', { id, agent, content: text, category, importance, links: topLinks.length });
@@ -497,7 +510,13 @@ export class MemoryGraph {
         report.linksClean += before - mem.links.length;
       }
 
-      await this.save();
+      if (this.storage.incremental) {
+        for (const id of removeIds) {
+          await this.storage.remove(id);
+        }
+      } else {
+        await this.save();
+      }
     }
 
     this.emit('decay', { total: report.total, healthy: report.healthy, weakening: report.weakening, archived: report.archived.length, deleted: report.deleted.length, dryRun });
@@ -518,7 +537,12 @@ export class MemoryGraph {
     mem.importance = Math.min(1.0, (mem.importance || 0.5) + boost);
     mem.accessCount = (mem.accessCount || 0) + 1;
     mem.updated_at = new Date().toISOString();
-    await this.save();
+
+    if (this.storage.incremental) {
+      await this.storage.upsert(mem);
+    } else {
+      await this.save();
+    }
 
     const { strength } = this.calcStrength(mem);
     return { id: mem.id, memory: mem.memory, oldImportance, newImportance: mem.importance, accessCount: mem.accessCount, strength: +strength.toFixed(3) };
@@ -637,6 +661,9 @@ Respond ONLY with a JSON object:
           const archived = await this.storage.loadArchive();
           archived.push({ ...old, embedding: undefined, archived_at: new Date().toISOString(), archived_reason: `Superseded: ${conflict.reason}` });
           await this.storage.saveArchive(archived);
+          if (this.storage.incremental) {
+            await this.storage.remove(conflict.memoryId);
+          }
           this.memories = this.memories.filter(m => m.id !== conflict.memoryId);
           actions.push({ type: 'archived', id: conflict.memoryId, reason: conflict.reason, old: old.memory });
         }
@@ -656,7 +683,11 @@ Respond ONLY with a JSON object:
           existing.embedding = newEmb;
           existing.evolution = existing.evolution || [];
           existing.evolution.push({ from: oldContent, to: text, reason: update.reason, at: new Date().toISOString() });
-          await this.save();
+          if (this.storage.incremental) {
+            await this.storage.upsert(existing);
+          } else {
+            await this.save();
+          }
           actions.push({ type: 'updated', id: update.memoryId, reason: update.reason, old: oldContent, new: text });
           return { actions, stored: false, evolved: true };
         }
