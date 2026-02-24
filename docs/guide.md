@@ -105,10 +105,14 @@ This unlocks: semantic search, conflict resolution (`evolve`), and fact extracti
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `type` | `'openai'` | — | Provider type |
-| `apiKey` | `string` | — | API key |
-| `model` | `string` | — | Model name |
-| `baseUrl` | `string` | `'https://api.openai.com/v1'` | API base URL |
+| `type` | `'openai' \| 'openclaw'` | — | Provider type |
+| `apiKey` | `string` | — | API key (for `openai` type) |
+| `model` | `string` | `'haiku'` | Model name or alias |
+| `baseUrl` | `string` | `'https://api.openai.com/v1'` | API base URL (for `openai` type) |
+| `port` | `number` | `3577` | Gateway port (for `openclaw` type) |
+| `token` | `string` | env `OPENCLAW_GATEWAY_TOKEN` | Gateway token (for `openclaw` type) |
+
+> **OpenClaw users:** Set `type: 'openclaw'` to route LLM calls through your local gateway. No API key needed — it uses whatever models you've configured in OpenClaw.
 
 ### `extraction` — For bulk fact extraction
 
@@ -155,13 +159,13 @@ embeddings: {
 embeddings: {
   type: 'openai',
   apiKey: process.env.NVIDIA_API_KEY,
-  model: 'baai/bge-m3',
+  model: 'nvidia/nv-embedqa-e5-v5',
   baseUrl: 'https://integrate.api.nvidia.com/v1',
-  extraBody: { input_type: 'passage' },  // Required for some NIM models
+  nimInputType: true,  // Auto-switches: passage for store, query for search
 }
 ```
 
-> **Note:** Some NIM models like `nv-embedqa-e5-v5` expect `input_type: 'query'` for queries and `input_type: 'passage'` for documents. neolata-mem does NOT switch `input_type` automatically — the `extraBody` you configure is sent for all calls (both store and search). For most use cases, `input_type: 'passage'` works well enough for both. If you need per-call switching, use a custom embeddings provider.
+> **Asymmetric embeddings:** NIM models like `nv-embedqa-e5-v5` and `baai/bge-m3` use different `input_type` values for documents vs queries. Set `nimInputType: true` and neolata-mem handles it automatically — `input_type: 'passage'` when storing, `input_type: 'query'` when searching. This improves retrieval quality vs using a single input_type for both.
 
 ### Ollama (fully local, no API key)
 
@@ -225,6 +229,37 @@ Ephemeral — all data lost on process exit. Perfect for tests.
 storage: { type: 'memory' }
 ```
 
+### Supabase (recommended for production)
+
+First-class Supabase backend with incremental operations and server-side vector search.
+
+```javascript
+storage: {
+  type: 'supabase',
+  url: process.env.SUPABASE_URL,
+  key: process.env.SUPABASE_SERVICE_KEY,
+}
+```
+
+**Setup:** Run `sql/schema.sql` in your Supabase Dashboard SQL Editor to create the required tables.
+
+**Features:**
+- **Incremental writes** — `store()`, `reinforce()`, `decay()` use targeted upsert/delete instead of full save cycles
+- **Server-side vector search** — delegates to Supabase RPCs when available, falls back to client-side
+- **Automatic link management** — bidirectional links stored in `memory_links` table with CASCADE deletes
+- **Archive table** — decayed memories preserved in `memories_archive`
+
+**Tables created by schema.sql:**
+| Table | Purpose |
+|---|---|
+| `memories` | Active memories with embeddings |
+| `memory_links` | Bidirectional links between memories |
+| `memories_archive` | Archived/decayed memories |
+
+**RPCs (optional, improves search performance):**
+- `search_memories_semantic(agent, embedding, count, min_similarity)` — agent-scoped search
+- `search_memories_global(embedding, count, min_similarity)` — cross-agent search
+
 ### Custom Storage (BYO)
 
 Implement the storage interface:
@@ -236,13 +271,21 @@ const myStorage = {
   async loadArchive() { /* return Memory[] */ },
   async saveArchive(memories) { /* persist */ },
   genId() { /* return unique string */ },
+
+  // Optional: incremental operations (skip full save cycles)
+  incremental: true,
+  async upsert(memory) { /* insert or update one memory */ },
+  async remove(id) { /* delete one memory */ },
+  async upsertLinks(sourceId, links) { /* insert link rows */ },
+  async removeLinks(memoryId) { /* remove all links for memory */ },
+  async search(embedding, opts) { /* server-side vector search, return null to skip */ },
 };
 
 import { MemoryGraph } from '@jeremiaheth/neolata-mem/graph';
 const graph = new MemoryGraph({ storage: myStorage, embeddings, config: {} });
 ```
 
-This lets you back neolata-mem with PostgreSQL, SQLite, Redis, Supabase, S3 — anything.
+This lets you back neolata-mem with PostgreSQL, SQLite, Redis, S3 — anything.
 
 ---
 
@@ -601,39 +644,52 @@ const threats = await mem.searchAll('SQL injection');
 const ctx = await mem.context('kuro', 'SQL injection remediation');
 ```
 
-### Custom storage backend (Supabase example)
+### Supabase + NIM + OpenClaw (production setup)
 
 ```javascript
-import { MemoryGraph } from '@jeremiaheth/neolata-mem/graph';
-import { openaiEmbeddings } from '@jeremiaheth/neolata-mem/embeddings';
-import { createClient } from '@supabase/supabase-js';
+import { createMemory, markdownWritethrough } from '@jeremiaheth/neolata-mem';
 
-const supabase = createClient(URL, KEY);
-
-const storage = {
-  async load() {
-    const { data } = await supabase.from('memories').select('*').eq('archived', false);
-    return data || [];
+const mem = createMemory({
+  storage: {
+    type: 'supabase',
+    url: process.env.SUPABASE_URL,
+    key: process.env.SUPABASE_SERVICE_KEY,
   },
-  async save(memories) {
-    await supabase.from('memories').upsert(memories);
+  embeddings: {
+    type: 'openai',
+    apiKey: process.env.NVIDIA_API_KEY,
+    model: 'nvidia/nv-embedqa-e5-v5',
+    baseUrl: 'https://integrate.api.nvidia.com/v1',
+    nimInputType: true,  // passage for store, query for search
   },
-  async loadArchive() {
-    const { data } = await supabase.from('memories').select('*').eq('archived', true);
-    return data || [];
-  },
-  async saveArchive(memories) {
-    const archived = memories.map(m => ({ ...m, archived: true }));
-    await supabase.from('memories').upsert(archived);
-  },
-  genId() { return crypto.randomUUID(); },
-};
-
-const graph = new MemoryGraph({
-  storage,
-  embeddings: openaiEmbeddings({ apiKey: KEY }),
-  config: { decayHalfLifeDays: 60 },
+  llm: { type: 'openclaw', model: 'haiku' },  // Uses OpenClaw gateway
+  graph: { decayHalfLifeDays: 60 },
 });
+
+// Optional: sync to daily markdown files
+markdownWritethrough(mem, { dir: './memory' });
+
+// Store, search, decay — all backed by Supabase
+await mem.store('kuro', 'User prefers dark mode');
+const results = await mem.search('kuro', 'dark mode');
+```
+
+### Write-through to webhooks
+
+```javascript
+import { createMemory, webhookWritethrough } from '@jeremiaheth/neolata-mem';
+
+const mem = createMemory({ /* ... */ });
+
+// POST every store + decay event to a webhook
+const detach = webhookWritethrough(mem, {
+  url: 'https://hooks.slack.com/services/xxx',
+  events: ['store', 'decay'],
+  headers: { 'X-Custom': 'value' },
+});
+
+// Later: stop forwarding
+detach();
 ```
 
 ---
