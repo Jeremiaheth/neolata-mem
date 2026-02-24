@@ -45,7 +45,16 @@ npm install @jeremiaheth/neolata-mem
 
 No Docker. No Python. No Neo4j. No cloud API required.
 
-> **Note:** This package has no install scripts (`preinstall`/`postinstall`) and zero runtime dependencies. Only `vitest` as a devDependency.
+> **Supply-chain verification:** This package has zero runtime dependencies and no install scripts. Verify before installing:
+> ```bash
+> # Check for install scripts (should show only "test"):
+> npm view @jeremiaheth/neolata-mem scripts
+> # Check for runtime deps (should be empty):
+> npm view @jeremiaheth/neolata-mem dependencies
+> # Audit the tarball contents (15 files, ~40 kB):
+> npm pack @jeremiaheth/neolata-mem --dry-run
+> ```
+> Source is fully auditable at [github.com/Jeremiaheth/neolata-mem](https://github.com/Jeremiaheth/neolata-mem).
 
 ## Quick Start (Zero Config)
 
