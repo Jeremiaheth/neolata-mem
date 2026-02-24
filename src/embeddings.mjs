@@ -11,6 +11,7 @@
  * @returns {number}
  */
 export function cosineSimilarity(a, b) {
+  if (a.length !== b.length) throw new Error(`Vector dimension mismatch: ${a.length} vs ${b.length}`);
   let dot = 0, normA = 0, normB = 0;
   for (let i = 0; i < a.length; i++) {
     dot += a[i] * b[i];

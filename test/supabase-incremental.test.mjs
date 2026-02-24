@@ -55,20 +55,20 @@ describe('supabaseStorage incremental ops', () => {
 
   it('remove() deletes a memory by id', async () => {
     const mem = {
-      id: 'mem_del', agent: 'a1', memory: 'Gone', category: 'fact',
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000001', agent: 'a1', memory: 'Gone', category: 'fact',
       importance: 0.5, tags: [], embedding: null,
       links: [], created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
     };
     await storage.upsert(mem);
     expect((await storage.load())).toHaveLength(1);
 
-    await storage.remove('mem_del');
+    await storage.remove('aaaaaaaa-bbbb-cccc-dddd-000000000001');
     expect((await storage.load())).toHaveLength(0);
   });
 
   it('remove() is a no-op for non-existent id', async () => {
     // Should not throw
-    await storage.remove('mem_nonexistent');
+    await storage.remove('aaaaaaaa-bbbb-cccc-dddd-000000000099');
   });
 
   // ── upsertLinks ──
@@ -76,47 +76,47 @@ describe('supabaseStorage incremental ops', () => {
   it('upsertLinks() inserts link rows', async () => {
     // Set up two memories first
     await storage.upsert({
-      id: 'mem_a', agent: 'a1', memory: 'A', category: 'fact',
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000002', agent: 'a1', memory: 'A', category: 'fact',
       importance: 0.5, tags: [], embedding: null, links: [],
       created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
     });
     await storage.upsert({
-      id: 'mem_b', agent: 'a1', memory: 'B', category: 'fact',
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000003', agent: 'a1', memory: 'B', category: 'fact',
       importance: 0.5, tags: [], embedding: null, links: [],
       created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
     });
 
-    await storage.upsertLinks('mem_a', [{ id: 'mem_b', similarity: 0.85 }]);
+    await storage.upsertLinks('aaaaaaaa-bbbb-cccc-dddd-000000000002', [{ id: 'aaaaaaaa-bbbb-cccc-dddd-000000000003', similarity: 0.85 }]);
 
     // Load and check links are attached
     const loaded = await storage.load();
-    const memA = loaded.find(m => m.id === 'mem_a');
-    const memB = loaded.find(m => m.id === 'mem_b');
+    const memA = loaded.find(m => m.id === 'aaaaaaaa-bbbb-cccc-dddd-000000000002');
+    const memB = loaded.find(m => m.id === 'aaaaaaaa-bbbb-cccc-dddd-000000000003');
     // Bidirectional
-    expect(memA.links.some(l => l.id === 'mem_b')).toBe(true);
-    expect(memB.links.some(l => l.id === 'mem_a')).toBe(true);
+    expect(memA.links.some(l => l.id === 'aaaaaaaa-bbbb-cccc-dddd-000000000003')).toBe(true);
+    expect(memB.links.some(l => l.id === 'aaaaaaaa-bbbb-cccc-dddd-000000000002')).toBe(true);
   });
 
   // ── removeLinks ──
 
   it('removeLinks() removes all links for a memory', async () => {
     await storage.upsert({
-      id: 'mem_x', agent: 'a1', memory: 'X', category: 'fact',
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000004', agent: 'a1', memory: 'X', category: 'fact',
       importance: 0.5, tags: [], embedding: null, links: [],
       created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
     });
     await storage.upsert({
-      id: 'mem_y', agent: 'a1', memory: 'Y', category: 'fact',
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000005', agent: 'a1', memory: 'Y', category: 'fact',
       importance: 0.5, tags: [], embedding: null, links: [],
       created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
     });
-    await storage.upsertLinks('mem_x', [{ id: 'mem_y', similarity: 0.9 }]);
+    await storage.upsertLinks('aaaaaaaa-bbbb-cccc-dddd-000000000004', [{ id: 'aaaaaaaa-bbbb-cccc-dddd-000000000005', similarity: 0.9 }]);
 
-    await storage.removeLinks('mem_x');
+    await storage.removeLinks('aaaaaaaa-bbbb-cccc-dddd-000000000004');
 
     const loaded = await storage.load();
-    const memX = loaded.find(m => m.id === 'mem_x');
-    const memY = loaded.find(m => m.id === 'mem_y');
+    const memX = loaded.find(m => m.id === 'aaaaaaaa-bbbb-cccc-dddd-000000000004');
+    const memY = loaded.find(m => m.id === 'aaaaaaaa-bbbb-cccc-dddd-000000000005');
     expect(memX.links).toHaveLength(0);
     expect(memY.links).toHaveLength(0);
   });
@@ -148,5 +148,22 @@ describe('supabaseStorage incremental ops', () => {
 
   it('exposes incremental: true flag', () => {
     expect(storage.incremental).toBe(true);
+  });
+
+  // ── Security: UUID validation ──
+
+  it('remove() rejects non-UUID ids (injection prevention)', async () => {
+    await expect(storage.remove('anything,id.neq.null)&select=*--'))
+      .rejects.toThrow('must be a valid UUID');
+  });
+
+  it('upsertLinks() rejects non-UUID sourceId', async () => {
+    await expect(storage.upsertLinks('evil_injection', [{ id: 'aaaaaaaa-bbbb-cccc-dddd-000000000002', similarity: 0.5 }]))
+      .rejects.toThrow('must be a valid UUID');
+  });
+
+  it('removeLinks() rejects non-UUID memoryId', async () => {
+    await expect(storage.removeLinks('../../../etc/passwd'))
+      .rejects.toThrow('must be a valid UUID');
   });
 });

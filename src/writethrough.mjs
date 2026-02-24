@@ -6,7 +6,7 @@
  */
 
 import { writeFile, readFile, mkdir } from 'fs/promises';
-import { join, dirname } from 'path';
+import { join, dirname, resolve } from 'path';
 
 /**
  * Attach a markdown write-through to a MemoryGraph.
@@ -32,7 +32,13 @@ export function markdownWritethrough(graph, { dir, filenamePattern = 'memories-{
   const handler = async (ev) => {
     const date = new Date().toISOString().slice(0, 10);
     const filename = filenamePattern.replace('{date}', date);
-    const filepath = join(dir, filename);
+    const filepath = resolve(dir, filename);
+
+    // Path traversal guard
+    if (!filepath.startsWith(resolve(dir))) {
+      console.error(`[writethrough] Path traversal blocked: ${filename}`);
+      return;
+    }
 
     try {
       await mkdir(dirname(filepath), { recursive: true });

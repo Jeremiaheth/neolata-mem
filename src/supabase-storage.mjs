@@ -16,6 +16,21 @@
 
 import { randomUUID } from 'crypto';
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function assertUUID(id, label = 'id') {
+  if (typeof id !== 'string' || !UUID_RE.test(id)) {
+    throw new Error(`${label} must be a valid UUID, got: ${String(id).slice(0, 50)}`);
+  }
+}
+
+/** Sanitize API error text — strip potential secrets */
+function sanitizeErrorText(text) {
+  return text
+    .replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]')
+    .replace(/\beyJ[A-Za-z0-9_-]{10,}\b/g, '[JWT_REDACTED]')
+    .replace(/\b(sk-|nvapi-|key-)[A-Za-z0-9_-]{10,}\b/g, '[KEY_REDACTED]');
+}
+
 export function supabaseStorage({
   url,
   key,
@@ -45,7 +60,7 @@ export function supabaseStorage({
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      throw new Error(`Supabase ${method} ${path} → ${res.status}: ${text.slice(0, 300)}`);
+      throw new Error(`Supabase ${method} ${path} → ${res.status}: ${sanitizeErrorText(text.slice(0, 300))}`);
     }
     const text = await res.text();
     return text ? JSON.parse(text) : null;
@@ -264,6 +279,7 @@ export function supabaseStorage({
      * Also removes associated links (if FK CASCADE is set, Supabase handles this).
      */
     async remove(id) {
+      assertUUID(id, 'remove: id');
       await request('DELETE', `/rest/v1/${linksTable}?or=(source_id.eq.${id},target_id.eq.${id})`);
       await request('DELETE', `/rest/v1/${table}?id=eq.${id}`);
     },
@@ -274,6 +290,7 @@ export function supabaseStorage({
      * @param {Array<{id: string, similarity: number}>} links
      */
     async upsertLinks(sourceId, links) {
+      assertUUID(sourceId, 'upsertLinks: sourceId');
       if (!links.length) return;
       const rows = links.map(l => ({
         id: randomUUID(),
@@ -292,6 +309,7 @@ export function supabaseStorage({
      * @param {string} memoryId
      */
     async removeLinks(memoryId) {
+      assertUUID(memoryId, 'removeLinks: memoryId');
       await request('DELETE', `/rest/v1/${linksTable}?or=(source_id.eq.${memoryId},target_id.eq.${memoryId})`);
     },
   };

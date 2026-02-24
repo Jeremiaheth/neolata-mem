@@ -16,11 +16,13 @@
  * @param {number} [opts.temperature=0.1]
  */
 export function openclawChat({ model = 'haiku', port = 3577, token, maxTokens = 1000, temperature = 0.1 } = {}) {
+  const p = Number(port);
+  if (!Number.isInteger(p) || p < 1 || p > 65535) throw new Error(`Invalid port: ${port}`);
   const apiKey = token || process.env.OPENCLAW_GATEWAY_TOKEN || 'openclaw';
   return openaiChat({
     apiKey,
     model,
-    baseUrl: `http://localhost:${port}/v1`,
+    baseUrl: `http://127.0.0.1:${p}/v1`,
     maxTokens,
     temperature,
   });
