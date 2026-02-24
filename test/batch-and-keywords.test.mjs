@@ -140,6 +140,25 @@ describe('storeMany', () => {
     await expect(graph.storeMany('a', [{ text: '' }])).rejects.toThrow('non-empty string');
   });
 
+  it('rejects batch exceeding maxBatchSize', async () => {
+    const graph = new MemoryGraph({
+      storage: memStorage(), embeddings: noopEmbed(),
+      config: { maxBatchSize: 3 },
+    });
+    await expect(graph.storeMany('a', [
+      { text: 'one' }, { text: 'two' }, { text: 'three' }, { text: 'four' },
+    ])).rejects.toThrow('exceeds max batch size');
+  });
+
+  it('allows batch within maxBatchSize', async () => {
+    const graph = new MemoryGraph({
+      storage: memStorage(), embeddings: noopEmbed(),
+      config: { maxBatchSize: 3 },
+    });
+    const result = await graph.storeMany('a', [{ text: 'one' }, { text: 'two' }]);
+    expect(result.stored).toBe(2);
+  });
+
   it('respects memory cap', async () => {
     const graph = new MemoryGraph({
       storage: memStorage(), embeddings: noopEmbed(),
@@ -150,12 +169,78 @@ describe('storeMany', () => {
     ])).rejects.toThrow('memory limit');
   });
 
+  it('rolls back on embedding failure mid-batch', async () => {
+    let callCount = 0;
+    const failingEmbed = {
+      embed: async (...texts) => {
+        callCount++;
+        if (callCount > 1) throw new Error('API quota exceeded');
+        return texts.map(() => null);
+      },
+    };
+    const graph = new MemoryGraph({ storage: memStorage(), embeddings: failingEmbed });
+    // 128 items = 2 batches of 64. Second batch will fail.
+    const items = Array.from({ length: 128 }, (_, i) => ({ text: `memory ${i}` }));
+    await expect(graph.storeMany('a', items, { embeddingBatchSize: 64 })).rejects.toThrow('API quota');
+    // Rollback: no memories should remain
+    expect(graph.memories.length).toBe(0);
+    expect(graph._idIndex.size).toBe(0);
+  });
+
+  it('rolls back on save failure after successful embedding', async () => {
+    const failStorage = {
+      ...memStorage(),
+      save: async () => { throw new Error('disk full'); },
+    };
+    const graph = new MemoryGraph({ storage: failStorage, embeddings: noopEmbed() });
+    await expect(graph.storeMany('a', [{ text: 'one' }])).rejects.toThrow('disk full');
+    expect(graph.memories.length).toBe(0);
+  });
+
   it('emits store events for each item', async () => {
     const graph = new MemoryGraph({ storage: memStorage(), embeddings: noopEmbed() });
     const events = [];
     graph.on('store', e => events.push(e));
     await graph.storeMany('a', ['x', 'y', 'z']);
     expect(events).toHaveLength(3);
+  });
+});
+
+// ── S7: Token index reindex on evolve update ───────────
+describe('token index consistency on memory update', () => {
+  it('finds memory by new text after in-place update', async () => {
+    const graph = new MemoryGraph({ storage: memStorage(), embeddings: noopEmbed() });
+    const { id } = await graph.store('a', 'python programming language');
+
+    // Simulate evolve() in-place update: change memory text
+    const mem = graph._byId(id);
+    graph._deindexMemory(mem);
+    mem.memory = 'rust programming language';
+    graph._indexMemory(mem);
+
+    // Should find by new text
+    const results = await graph.search('a', 'rust');
+    expect(results.length).toBe(1);
+    expect(results[0].memory).toBe('rust programming language');
+
+    // Should NOT find by old text
+    const old = await graph.search('a', 'python');
+    expect(old.length).toBe(0);
+  });
+
+  it('BUG: evolve update without reindex causes stale results', async () => {
+    const graph = new MemoryGraph({ storage: memStorage(), embeddings: noopEmbed() });
+    const { id } = await graph.store('a', 'python programming language');
+
+    // Simulate what evolve() currently does: update text WITHOUT reindexing
+    const mem = graph._byId(id);
+    mem.memory = 'rust programming language';
+    // No deindex/reindex!
+
+    // This SHOULD find rust but won't until S7 is fixed in evolve()
+    const results = await graph.search('a', 'rust');
+    // Before fix: 0 results (stale index). After fix in evolve(): this test becomes moot.
+    expect(results.length).toBe(0); // documents the bug
   });
 });
 
@@ -178,5 +263,14 @@ describe('searchMany', () => {
   it('validates inputs', async () => {
     const graph = new MemoryGraph({ storage: memStorage(), embeddings: noopEmbed() });
     await expect(graph.searchMany('a', [])).rejects.toThrow('non-empty array');
+  });
+
+  it('rejects queries exceeding maxQueryBatchSize', async () => {
+    const graph = new MemoryGraph({
+      storage: memStorage(), embeddings: noopEmbed(),
+      config: { maxQueryBatchSize: 2 },
+    });
+    await graph.store('a', 'test');
+    await expect(graph.searchMany('a', ['q1', 'q2', 'q3'])).rejects.toThrow('exceeds max query batch size');
   });
 });

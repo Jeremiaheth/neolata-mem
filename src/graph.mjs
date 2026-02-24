@@ -81,6 +81,8 @@ export class MemoryGraph {
       maxMemories: config.maxMemories ?? 50000,
       maxMemoryLength: config.maxMemoryLength ?? 10000,
       maxAgentLength: config.maxAgentLength ?? 64,
+      maxBatchSize: config.maxBatchSize ?? 1000,
+      maxQueryBatchSize: config.maxQueryBatchSize ?? 100,
       evolveMinIntervalMs: config.evolveMinIntervalMs ?? 1000,
     };
   }
@@ -384,6 +386,7 @@ export class MemoryGraph {
     if (agent.length > this.config.maxAgentLength) throw new Error(`agent exceeds max length (${this.config.maxAgentLength})`);
     if (!/^[a-zA-Z0-9_\-. ]+$/.test(agent)) throw new Error('agent contains invalid characters');
     if (!Array.isArray(items) || items.length === 0) throw new Error('items must be a non-empty array');
+    if (items.length > this.config.maxBatchSize) throw new Error(`Batch of ${items.length} exceeds max batch size (${this.config.maxBatchSize})`);
 
     await this.init();
 
@@ -399,7 +402,7 @@ export class MemoryGraph {
       return text;
     });
 
-    // Batch embed all texts
+    // Batch embed all texts (before mutating state)
     const allEmbeddings = [];
     for (let i = 0; i < texts.length; i += embeddingBatchSize) {
       const batch = texts.slice(i, i + embeddingBatchSize);
@@ -407,6 +410,9 @@ export class MemoryGraph {
       allEmbeddings.push(...embeddings);
     }
 
+    // Build all new memories + backlink mutations before committing
+    const newMems = [];
+    const backlinkAdded = []; // track {target, linkEntry} for rollback
     const results = [];
     const now = new Date().toISOString();
 
@@ -424,6 +430,14 @@ export class MemoryGraph {
             related.push({ id: existing.id, similarity: sim, agent: existing.agent });
           }
         }
+        // Also check already-staged new mems in this batch
+        for (const staged of newMems) {
+          if (!staged.embedding) continue;
+          const sim = cosineSimilarity(embedding, staged.embedding);
+          if (sim > this.config.linkThreshold) {
+            related.push({ id: staged.id, similarity: sim, agent: staged.agent });
+          }
+        }
         related.sort((a, b) => b.similarity - a.similarity);
       }
       const topLinks = related.slice(0, this.config.maxLinksPerMemory);
@@ -438,34 +452,54 @@ export class MemoryGraph {
         links: topLinks.map(l => ({ id: l.id, similarity: l.similarity })),
         created_at: now, updated_at: now,
       };
+      newMems.push(newMem);
+      results.push({ id, links: topLinks.length });
+    }
 
+    // Commit phase: push all to memory + indexes, add backlinks
+    for (const newMem of newMems) {
       this.memories.push(newMem);
       this._indexMemory(newMem);
 
-      // Backlinks
-      for (const link of topLinks) {
+      for (const link of newMem.links) {
         const target = this._byId(link.id);
         if (target) {
           if (!target.links) target.links = [];
-          if (!target.links.find(l => l.id === id)) {
-            target.links.push({ id, similarity: link.similarity });
+          if (!target.links.find(l => l.id === newMem.id)) {
+            const linkEntry = { id: newMem.id, similarity: link.similarity };
+            target.links.push(linkEntry);
+            target.updated_at = now;
+            backlinkAdded.push({ target, linkEntry });
           }
-          target.updated_at = now;
         }
       }
-
-      results.push({ id, links: topLinks.length });
-      this.emit('store', { id, agent, content: newMem.memory, category: newMem.category, importance: newMem.importance, links: topLinks.length });
     }
 
-    // Single save at the end
-    if (this.storage.incremental) {
-      for (const r of results) {
-        const mem = this._byId(r.id);
-        if (mem) await this.storage.upsert(mem);
+    // Persist — rollback on failure
+    try {
+      if (this.storage.incremental) {
+        for (const newMem of newMems) {
+          await this.storage.upsert(newMem);
+        }
+      } else {
+        await this.save();
       }
-    } else {
-      await this.save();
+    } catch (err) {
+      // Rollback: remove new memories from state + indexes
+      const newIds = new Set(newMems.map(m => m.id));
+      for (const newMem of newMems) this._deindexMemory(newMem);
+      this.memories = this.memories.filter(m => !newIds.has(m.id));
+      // Rollback backlinks
+      for (const { target, linkEntry } of backlinkAdded) {
+        target.links = (target.links || []).filter(l => l !== linkEntry);
+      }
+      throw err;
+    }
+
+    // Emit events only after successful persist
+    for (let i = 0; i < newMems.length; i++) {
+      const m = newMems[i];
+      this.emit('store', { id: m.id, agent, content: m.memory, category: m.category, importance: m.importance, links: results[i].links });
     }
 
     return { total: items.length, stored: results.length, results };
@@ -482,6 +516,7 @@ export class MemoryGraph {
    */
   async searchMany(agent, queries, { limit = 10, minSimilarity = 0 } = {}) {
     if (!Array.isArray(queries) || queries.length === 0) throw new Error('queries must be a non-empty array');
+    if (queries.length > this.config.maxQueryBatchSize) throw new Error(`${queries.length} queries exceeds max query batch size (${this.config.maxQueryBatchSize})`);
 
     await this.init();
 
@@ -973,6 +1008,7 @@ Respond ONLY with a JSON object:
         const existing = this._byId(update.memoryId);
         if (existing) {
           const oldContent = existing.memory;
+          this._deindexMemory(existing);
           existing.memory = text;
           existing.updated_at = new Date().toISOString();
           existing.importance = Math.max(existing.importance, importance);
@@ -980,6 +1016,7 @@ Respond ONLY with a JSON object:
           existing.embedding = newEmb;
           existing.evolution = existing.evolution || [];
           existing.evolution.push({ from: oldContent, to: text, reason: update.reason, at: new Date().toISOString() });
+          this._indexMemory(existing);
           if (this.storage.incremental) {
             await this.storage.upsert(existing);
           } else {

@@ -1,6 +1,6 @@
 {
   "name": "@jeremiaheth/neolata-mem",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Graph-native memory engine for AI agents with Zettelkasten linking, biological decay, and conflict resolution",
   "type": "module",
   "main": "src/index.mjs",
