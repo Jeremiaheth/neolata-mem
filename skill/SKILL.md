@@ -21,7 +21,7 @@ Graph-native memory for AI agents with hybrid search, biological decay, and zero
 
 **npm package:** `@jeremiaheth/neolata-mem`
 **Repository:** [github.com/Jeremiaheth/neolata-mem](https://github.com/Jeremiaheth/neolata-mem)
-**License:** MIT | **Tests:** 120/120 passing | **Node:** ≥18
+**License:** MIT | **Tests:** 144/144 passing | **Node:** ≥18
 
 ## When to Use This Skill
 
@@ -79,12 +79,14 @@ Supports **5+ embedding providers**: OpenAI, NVIDIA NIM, Ollama, Azure, Together
 ## Key Features
 
 ### Hybrid Search (Vector + Keyword Fallback)
-Uses semantic similarity when embeddings are configured; falls back to substring keyword matching when they're not:
+Uses semantic similarity when embeddings are configured; falls back to tokenized keyword matching when they're not:
 ```javascript
 // With embeddings → vector cosine similarity search
-// Without embeddings → case-insensitive keyword matching
+// Without embeddings → normalized keyword matching (stop word removal, lowercase, dedup)
 const results = await mem.search('agent', 'security vulnerabilities');
 ```
+
+Keyword search uses an inverted token index for O(1) lookups. When >500 memories exist, vector search pre-filters candidates using token overlap before cosine similarity (candidate narrowing).
 
 ### Biological Decay
 Memories fade over time unless reinforced. Old, unaccessed memories naturally lose relevance:
@@ -125,6 +127,27 @@ mem.on('store', ({ agent, content, id }) => { /* ... */ });
 mem.on('search', ({ agent, query, results }) => { /* ... */ });
 mem.on('decay', ({ archived, deleted, dryRun }) => { /* counts, not arrays */ });
 ```
+
+### Batch APIs
+Amortize embedding calls and I/O with bulk operations:
+```javascript
+// Store many memories in one call (single embed batch + single persist)
+const result = await mem.storeMany('agent', [
+  { text: 'Fact one', category: 'fact', importance: 0.8 },
+  { text: 'Fact two', tags: ['infra'] },
+  'Plain string also works',
+]);
+// { total: 3, stored: 3, results: [{ id, links }, ...] }
+
+// Search multiple queries in one call (single embed batch)
+const results = await mem.searchMany('agent', ['query one', 'query two']);
+// [{ query: 'query one', results: [...] }, { query: 'query two', results: [...] }]
+```
+
+Batch operations include:
+- Atomic rollback on persist failure (memories, indexes, backlinks all reverted)
+- Cross-linking within the same batch
+- Configurable caps: `maxBatchSize` (default 1000), `maxQueryBatchSize` (default 100)
 
 ### Bulk Ingestion with Fact Extraction
 Extract atomic facts from text using an LLM, then store each with A-MEM linking:
@@ -183,6 +206,7 @@ await mem.decay();
 | Multi-agent | ✅ | ✅ | Per-agent |
 | Zero infrastructure | ✅ | ❌ | ✅ |
 | Event emitter | ✅ | ❌ | ❌ |
+| Batch APIs (storeMany/searchMany) | ✅ | ❌ | ❌ |
 | npm package | ✅ | ✅ | Built-in |
 
 ## Security
@@ -190,7 +214,8 @@ await mem.decay();
 neolata-mem includes hardening against common agent memory attack vectors:
 
 - **Prompt injection mitigation**: XML-fenced user content in all LLM prompts + structural output validation
-- **Input validation**: Agent names (alphanumeric, max 64), text length caps (10KB), bounded memory count (50K)
+- **Input validation**: Agent names (alphanumeric, max 64), text length caps (10KB), bounded memory count (50K), batch size caps (1000 store / 100 query)
+- **Batch atomicity**: `storeMany` rolls back all memories, indexes, and backlinks on persist failure
 - **SSRF protection**: All provider URLs validated via `validateBaseUrl()` — blocks cloud metadata endpoints (`169.254.169.254`), private IP ranges, non-HTTP protocols
 - **Supabase hardening**: UUID validation on query params, error text sanitized (strips tokens/keys), upsert-based save (crash-safe), 429 retry with backoff
 - **Atomic writes**: Write-to-temp + rename prevents file corruption
