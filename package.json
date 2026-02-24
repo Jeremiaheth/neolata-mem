@@ -1,0 +1,54 @@
+{
+  "name": "@jeremiaheth/neolata-mem",
+  "version": "0.2.0",
+  "description": "Graph-native memory engine for AI agents with Zettelkasten linking, biological decay, and conflict resolution",
+  "type": "module",
+  "main": "src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./graph": "./src/graph.mjs",
+    "./embeddings": "./src/embeddings.mjs",
+    "./storage": "./src/storage.mjs",
+    "./extraction": "./src/extraction.mjs",
+    "./llm": "./src/llm.mjs"
+  },
+  "bin": {
+    "neolata-mem": "./cli/index.mjs"
+  },
+  "files": [
+    "src/",
+    "cli/",
+    "docs/",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "vitest run"
+  },
+  "keywords": [
+    "ai",
+    "memory",
+    "agent",
+    "zettelkasten",
+    "graph",
+    "embeddings",
+    "rag",
+    "llm",
+    "vector-search",
+    "multi-agent",
+    "decay",
+    "conflict-resolution"
+  ],
+  "author": "Jeremiaheth",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Jeremiaheth/neolata-mem"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "vitest": "^4.0.18"
+  }
+}
