@@ -7,7 +7,10 @@ metadata:
       bins:
         - node
     optionalEnv:
-      - OPENAI_API_KEY  # Only needed for semantic/embedding search mode
+      - OPENAI_API_KEY        # For OpenAI embeddings/extraction
+      - NVIDIA_API_KEY        # For NVIDIA NIM embeddings
+      - SUPABASE_URL          # For Supabase storage backend
+      - SUPABASE_SERVICE_KEY  # For Supabase storage backend
     homepage: https://github.com/Jeremiaheth/neolata-mem
     repository: https://github.com/Jeremiaheth/neolata-mem
 ---
@@ -18,7 +21,7 @@ Graph-native memory for AI agents with hybrid search, biological decay, and zero
 
 **npm package:** `@jeremiaheth/neolata-mem`
 **Repository:** [github.com/Jeremiaheth/neolata-mem](https://github.com/Jeremiaheth/neolata-mem)
-**License:** MIT | **Tests:** 38/38 passing | **Node:** ≥18
+**License:** MIT | **Tests:** 120/120 passing | **Node:** ≥18
 
 ## When to Use This Skill
 
@@ -41,6 +44,8 @@ npm install @jeremiaheth/neolata-mem
 ```
 
 No Docker. No Python. No Neo4j. No cloud API required.
+
+> **Note:** This package has no install scripts (`preinstall`/`postinstall`) and zero runtime dependencies. Only `vitest` as a devDependency.
 
 ## Quick Start (Zero Config)
 
@@ -170,7 +175,7 @@ await mem.decay();
 
 | Feature | neolata-mem | Mem0 | OpenClaw memorySearch |
 |---------|:-----------:|:----:|:---------------------:|
-| Local-first (data stays on machine) | ✅ | ❌ | ✅ |
+| Local-first (data stays on machine) | ✅ (default) | ❌ | ✅ |
 | Hybrid search (vector + keyword) | ✅ | ❌ | ✅ |
 | Memory decay | ✅ | ❌ | ❌ |
 | Memory graph / linking | ✅ | ❌ | ❌ |
@@ -186,12 +191,31 @@ neolata-mem includes hardening against common agent memory attack vectors:
 
 - **Prompt injection mitigation**: XML-fenced user content in all LLM prompts + structural output validation
 - **Input validation**: Agent names (alphanumeric, max 64), text length caps (10KB), bounded memory count (50K)
+- **SSRF protection**: All provider URLs validated via `validateBaseUrl()` — blocks cloud metadata endpoints (`169.254.169.254`), private IP ranges, non-HTTP protocols
+- **Supabase hardening**: UUID validation on query params, error text sanitized (strips tokens/keys), upsert-based save (crash-safe), 429 retry with backoff
 - **Atomic writes**: Write-to-temp + rename prevents file corruption
+- **Path traversal guards**: Storage directories and write-through paths validated with `resolve()` + prefix checks
 - **Cryptographic IDs**: `crypto.randomUUID()` — no predictable memory references
 - **Retry bounds**: Exponential backoff with max 3 retries on 429s
 - **Error surfacing**: Failed conflict detection returns `{ error }` instead of silent fallthrough
 
 See the [full security section](docs/guide.md#security) for details.
+
+### Data Residency & External API Usage
+
+**Local-only mode** (default): Memories are stored as JSON at `./neolata-mem-data/graph.json` (relative to CWD). No data leaves your machine. Keyword search works without any API keys.
+
+**With embeddings/extraction/LLM**: When you configure an external provider (OpenAI, NIM, Ollama, etc.), your memory text is sent to that provider's API for embedding or extraction. This is opt-in — you must explicitly provide an API key and base URL.
+
+| Mode | Data sent externally? | Storage location |
+|------|:---------------------:|------------------|
+| Default (no config) | ❌ No | `./neolata-mem-data/graph.json` |
+| Ollama embeddings | ❌ No (local) | `./neolata-mem-data/graph.json` |
+| OpenAI/NIM embeddings | ⚠️ Memory text → provider | `./neolata-mem-data/graph.json` |
+| Supabase storage | ⚠️ All data → Supabase | Supabase PostgreSQL |
+| LLM conflict resolution | ⚠️ Memory text → provider | Storage unchanged |
+
+**To keep all data local**: Use Ollama for embeddings and JSON storage. No API keys needed for keyword-only search.
 
 ## Links
 

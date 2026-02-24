@@ -1,6 +1,6 @@
 {
   "name": "@jeremiaheth/neolata-mem",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Graph-native memory engine for AI agents with Zettelkasten linking, biological decay, and conflict resolution",
   "type": "module",
   "main": "src/index.mjs",
@@ -42,6 +42,7 @@
   ],
   "author": "Jeremiaheth",
   "license": "MIT",
+  "homepage": "https://github.com/Jeremiaheth/neolata-mem#readme",
   "repository": {
     "type": "git",
     "url": "https://github.com/Jeremiaheth/neolata-mem"
