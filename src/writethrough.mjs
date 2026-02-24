@@ -7,6 +7,7 @@
 
 import { writeFile, readFile, mkdir } from 'fs/promises';
 import { join, dirname, resolve } from 'path';
+import { validateBaseUrl } from './validate.mjs';
 
 /**
  * Attach a markdown write-through to a MemoryGraph.
@@ -70,8 +71,9 @@ export function markdownWritethrough(graph, { dir, filenamePattern = 'memories-{
  * @param {string[]} [opts.events=['store']] - Which events to forward
  * @returns {() => void} Detach function
  */
-export function webhookWritethrough(graph, { url, headers = {}, events = ['store'] } = {}) {
+export function webhookWritethrough(graph, { url, headers = {}, events = ['store'], allowPrivate = false } = {}) {
   if (!url) throw new Error('webhookWritethrough: url is required');
+  validateBaseUrl(url, { label: 'webhook url', allowPrivate });
 
   const handler = (eventName) => async (ev) => {
     try {

@@ -3,6 +3,8 @@
  * Must implement: chat(prompt) → string
  */
 
+import { validateBaseUrl } from './validate.mjs';
+
 // ─── OpenClaw Gateway Provider ──────────────────────────────
 /**
  * Use OpenClaw's gateway as the LLM provider.
@@ -38,6 +40,7 @@ export function openclawChat({ model = 'haiku', port = 3577, token, maxTokens = 
  * @param {number} [opts.temperature=0.1]
  */
 export function openaiChat({ apiKey, model = 'gpt-4.1-nano', baseUrl = 'https://api.openai.com/v1', maxTokens = 1000, temperature = 0.1 }) {
+  validateBaseUrl(baseUrl, { label: 'llm baseUrl' });
   return {
     name: `openai-chat(${model})`,
     async chat(prompt) {

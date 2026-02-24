@@ -4,6 +4,8 @@
  * Optionally: embedQuery(text) → number[][] (for asymmetric models like NIM)
  */
 
+import { validateBaseUrl } from './validate.mjs';
+
 /**
  * Cosine similarity between two vectors.
  * @param {number[]} a
@@ -43,6 +45,8 @@ export function openaiEmbeddings({
   extraBody = {}, nimInputType = false,
   retryMs = 2000, maxRetries = 3,
 }) {
+  validateBaseUrl(baseUrl, { label: 'embeddings baseUrl' });
+
   async function _embed(texts, overrides = {}, _retryCount = 0) {
     const input = Array.isArray(texts) ? texts : [texts];
     const res = await fetch(`${baseUrl}/embeddings`, {

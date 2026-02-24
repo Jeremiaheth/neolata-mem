@@ -46,8 +46,8 @@ export function supabaseStorage({
   const baseUrl = url.replace(/\/+$/, '');
   const _fetch = customFetch || globalThis.fetch;
 
-  // ── HTTP helper ──
-  async function request(method, path, body = null, extraHeaders = {}) {
+  // ── HTTP helper with retry on 429 ──
+  async function request(method, path, body = null, extraHeaders = {}, _retryCount = 0) {
     const res = await _fetch(`${baseUrl}${path}`, {
       method,
       headers: {
@@ -58,6 +58,12 @@ export function supabaseStorage({
       },
       body: body ? JSON.stringify(body) : undefined,
     });
+    if (res.status === 429) {
+      if (_retryCount >= 3) throw new Error(`Supabase ${method} ${path} → 429: rate limited after 3 retries`);
+      const backoff = 1000 * Math.pow(2, _retryCount);
+      await new Promise(r => setTimeout(r, backoff));
+      return request(method, path, body, extraHeaders, _retryCount + 1);
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       throw new Error(`Supabase ${method} ${path} → ${res.status}: ${sanitizeErrorText(text.slice(0, 300))}`);
@@ -167,21 +173,34 @@ export function supabaseStorage({
     },
 
     async save(memories) {
-      // Full save: delete all, re-insert.
-      // This matches jsonStorage semantics (full overwrite).
-      // For incremental ops, use upsert/delete instead.
-      await request('DELETE', `/rest/v1/${table}?id=not.is.null`);
-      await request('DELETE', `/rest/v1/${linksTable}?id=not.is.null`);
-
-      if (memories.length === 0) return;
-
-      // Batch insert memories
-      for (let i = 0; i < memories.length; i += 50) {
-        const batch = memories.slice(i, i + 50).map(toRow);
-        await request('POST', `/rest/v1/${table}`, batch, { 'Prefer': 'return=minimal' });
+      // Upsert-based save: batch upsert all memories, then reconcile links.
+      // Much safer than delete-all + re-insert (no data loss on crash).
+      if (memories.length === 0) {
+        // Empty save = clear all
+        await request('DELETE', `/rest/v1/${linksTable}?id=not.is.null`);
+        await request('DELETE', `/rest/v1/${table}?id=not.is.null`);
+        return;
       }
 
-      // Collect and insert links (deduplicated: only store source→target where source < target)
+      // Batch upsert memories (on conflict: update)
+      for (let i = 0; i < memories.length; i += 50) {
+        const batch = memories.slice(i, i + 50).map(toRow);
+        await request('POST', `/rest/v1/${table}`, batch, {
+          'Prefer': 'return=minimal,resolution=merge-duplicates',
+        });
+      }
+
+      // Delete memories that are in DB but not in the new set
+      const keepIds = new Set(memories.map(m => m.id));
+      const existing = await request('GET', `/rest/v1/${table}?select=id&limit=50000`);
+      const staleIds = (existing || []).filter(r => !keepIds.has(r.id)).map(r => r.id);
+      for (let i = 0; i < staleIds.length; i += 50) {
+        const batch = staleIds.slice(i, i + 50);
+        await request('DELETE', `/rest/v1/${table}?id=in.(${batch.join(',')})`);
+      }
+
+      // Reconcile links: clear and re-insert (links are cheap, memories are not)
+      await request('DELETE', `/rest/v1/${linksTable}?id=not.is.null`);
       const linkRows = [];
       const seen = new Set();
       for (const mem of memories) {
@@ -257,8 +276,15 @@ export function supabaseStorage({
           updated_at: r.updated_at,
           score: r.similarity,
         }));
-      } catch {
-        // RPC not available — return null so caller falls back to client-side
+      } catch (err) {
+        // Distinguish "RPC doesn't exist" (safe fallback) from real errors
+        const msg = err?.message || '';
+        if (msg.includes('404') || msg.includes('not found') || msg.includes('does not exist')) {
+          // RPC not deployed — fall back to client-side search silently
+          return null;
+        }
+        // Auth or server errors — log but still fall back (don't break search)
+        console.error(`[supabase-search] RPC failed (falling back to client-side): ${msg.slice(0, 200)}`);
         return null;
       }
     },

@@ -4,6 +4,8 @@
  * Fact = { fact: string, category: string, importance: number, tags: string[] }
  */
 
+import { validateBaseUrl } from './validate.mjs';
+
 // ─── LLM-Based Extraction (OpenAI-Compatible) ──────────────
 /**
  * Uses any OpenAI-compatible chat API to extract atomic facts.
@@ -13,6 +15,7 @@
  * @param {string} [opts.baseUrl='https://api.openai.com/v1']
  */
 export function llmExtraction({ apiKey, model = 'gpt-4.1-nano', baseUrl = 'https://api.openai.com/v1' }) {
+  validateBaseUrl(baseUrl, { label: 'extraction baseUrl' });
   return {
     name: `llm(${model})`,
     async extract(text) {

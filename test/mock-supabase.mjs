@@ -49,6 +49,10 @@ export function createMockSupabase() {
       } else if (val.startsWith('not.is.')) {
         const target = val.slice(7);
         result = result.filter(r => r[key] !== (target === 'null' ? null : target));
+      } else if (val.startsWith('in.(')) {
+        const inner = val.slice(4, -1);
+        const values = inner.split(',');
+        result = result.filter(r => values.includes(String(r[key])));
       } else if (val.startsWith('or=(')) {
         // Simple OR filter: or=(col1.eq.val1,col2.eq.val2)
         const inner = val.slice(4, -1);
