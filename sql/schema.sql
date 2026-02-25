@@ -5,8 +5,8 @@
 -- CREATE EXTENSION IF NOT EXISTS vector;
 --
 -- This creates the tables needed for supabaseStorage().
--- If you already have a 'memories' and 'memory_links' table (e.g. from
--- vanguard-memory.mjs), only run the archive table section.
+-- If you already have 'memories' and 'memory_links' tables,
+-- only run the archive table section.
 
 -- ═══════════════════════════════════════════════════════════
 -- 1. MEMORIES TABLE

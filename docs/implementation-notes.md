@@ -159,7 +159,7 @@ Weights are overridable via `search(..., { rerank: { relevance: 0.5, confidence:
 - Calling `search()` / `context()` at session startup
 - Running `consolidate()` / `decay()` on a schedule
 
-See `docs/PRD-openclaw-neolata-mem-session-memory.md` for the integration design.
+See the [guide](guide.md#openclaw-integration) for the integration design.
 
 ---
 
