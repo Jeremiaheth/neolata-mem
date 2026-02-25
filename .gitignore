@@ -4,4 +4,10 @@ neolata-mem-data/
 *.docx
 ~$*
 .env
+.env.*
 .DS_Store
+
+# Supabase secrets
+supabase/.temp/
+supabase/.env
+supabase/config.toml
