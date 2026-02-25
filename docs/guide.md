@@ -25,8 +25,9 @@
 17. [CLI Reference](#cli-reference)
 18. [OpenClaw Integration](#openclaw-integration)
 19. [Recipes](#recipes)
-20. [Troubleshooting](#troubleshooting)
-21. [Architecture](#architecture)
+20. [Runtime Helpers](#runtime-helpers)
+21. [Troubleshooting](#troubleshooting)
+22. [Architecture](#architecture)
 
 ---
 
@@ -1162,6 +1163,172 @@ const detach = webhookWritethrough(mem, {
 
 // Later: stop forwarding
 detach();
+```
+
+---
+
+## Runtime Helpers
+
+Standalone functions for common agent workflows. These work with any `MemoryGraph` instance and don't require special configuration.
+
+```javascript
+import {
+  detectKeyMoments, extractTopicSlug,
+  heartbeatStore, contextualRecall, preCompactionDump,
+} from '@jeremiaheth/neolata-mem';
+```
+
+### detectKeyMoments(text, opts?)
+
+Scans text for decisions, preferences, commitments, and blockers using pattern matching.
+
+```javascript
+const moments = detectKeyMoments("Decision: we're going with Supabase. Blocked by RLS permissions.");
+// [
+//   { type: 'decision', text: "Decision: we're going with Supabase", importance: 0.9 },
+//   { type: 'blocker', text: "Blocked by RLS permissions", importance: 0.85 },
+// ]
+```
+
+**Moment types and importance:**
+
+| Type | Importance | Trigger patterns |
+|------|-----------|-----------------|
+| `decision` | 0.9 | "Decision:", "We decided", "Going with", "Let's do", "Ship it" |
+| `commitment` | 0.8 | "I will", "We will", "TODO:", "Action item:" |
+| `blocker` | 0.85 | "Blocked by", "Blocker:", "Can't proceed", "Waiting on" |
+| `preference` | 0.7 | "I prefer", "I like", "I want", "Always use" |
+
+### extractTopicSlug(text, opts?)
+
+Derives a topic slug from text by finding the most frequent non-stop-word. Supports synonym mapping.
+
+```javascript
+extractTopicSlug('How did we fix the RLS policy issue?');
+// → 'rls'
+
+extractTopicSlug('Update the neolata package', {
+  synonyms: { 'neolata-mem': ['neolata', 'memory', 'mem'] }
+});
+// → 'neolata-mem'
+```
+
+### heartbeatStore(mem, agent, turns, config?)
+
+Auto-stores key moments from conversation turns. Designed to be called periodically (e.g., on a heartbeat timer). If no key moments are detected, stores a truncated session snapshot instead.
+
+**Config:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `sessionId` | string | — | Tag stored memories with session ID |
+| `topicSlug` | string | — | Tag with topic |
+| `projectSlug` | string | — | Tag with project |
+| `minNewTurns` | number | 3 | Skip if fewer new turns since last call |
+| `lastStoredIndex` | number | -1 | Index of last processed turn (track across calls) |
+
+**Returns:** `{ stored, ids, lastIndex, moments, skipped? }`
+
+```javascript
+const turns = [
+  { role: 'user', content: 'Let\'s do the Supabase migration' },
+  { role: 'assistant', content: 'Decision: migrating to Supabase for production storage.' },
+  { role: 'user', content: 'Ship it' },
+  { role: 'assistant', content: 'TODO: run the migration script on OCI.' },
+];
+
+let lastIndex = -1;
+const result = await heartbeatStore(mem, 'kuro', turns, {
+  sessionId: 'sess-abc',
+  topicSlug: 'supabase',
+  lastStoredIndex: lastIndex,
+});
+// → { stored: 3, ids: [...], lastIndex: 3, moments: [...] }
+
+lastIndex = result.lastIndex; // track for next heartbeat call
+```
+
+### contextualRecall(mem, agent, seedText, config?)
+
+Budget-aware context retrieval that merges three recall strategies: recent memories, semantic search results, and high-importance memories filtered by topic. Results are deduplicated, sorted by importance, and capped to a token budget.
+
+**Config:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `maxTokens` | number | 2000 | Token budget for returned memories |
+| `recentCount` | number | 5 | Number of recent memories to fetch |
+| `semanticCount` | number | 8 | Number of semantic search results |
+| `importantCount` | number | 10 | Candidates for importance filtering |
+| `importanceThreshold` | number | 0.8 | Minimum importance for the "important" lane |
+| `synonyms` | object | {} | Synonym map for topic extraction |
+
+**Returns:** `{ topicSlug, memories, totalTokens, excluded }`
+
+```javascript
+const ctx = await contextualRecall(mem, 'kuro', 'What was our RLS fix?', {
+  maxTokens: 1500,
+  importanceThreshold: 0.7,
+});
+
+console.log(ctx.topicSlug);    // 'rls'
+console.log(ctx.memories);     // [...] deduplicated, importance-sorted, budget-capped
+console.log(ctx.totalTokens);  // 1342
+console.log(ctx.excluded);     // 5 (didn't fit in budget)
+```
+
+### preCompactionDump(mem, agent, turns, config?)
+
+Extracts key moments from a full conversation, deduplicates them, persists the top takeaways, and stores a structured session snapshot. Call this before context window compaction to preserve important information.
+
+**Config:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `sessionId` | string | — | Tag stored memories with session ID |
+| `topicSlug` | string | — | Tag with topic |
+| `projectSlug` | string | — | Tag with project |
+| `maxTakeaways` | number | 10 | Maximum individual moments to persist |
+
+**Returns:** `{ takeaways, snapshotId, ids }`
+
+The session snapshot is a markdown-formatted summary grouped by type:
+
+```
+## Session Snapshot
+**Decisions:** migrating to Supabase for production storage
+**Open threads:** Blocked by RLS permissions on link inserts
+**Commitments:** TODO: run the migration script on OCI
+**Preferences:** I prefer service key over anon key for writes
+```
+
+```javascript
+const dump = await preCompactionDump(mem, 'kuro', allTurns, {
+  sessionId: 'sess-abc',
+  maxTakeaways: 10,
+});
+// → { takeaways: 4, snapshotId: 'uuid-...', ids: [...] }
+```
+
+### Workflow: Combining All Three
+
+A typical agent lifecycle using all three helpers:
+
+```javascript
+// 1. On session start: recall context
+const ctx = await contextualRecall(mem, agent, userMessage);
+// → inject ctx.memories into system prompt
+
+// 2. Periodically during conversation: heartbeat store
+let lastIdx = -1;
+setInterval(async () => {
+  const r = await heartbeatStore(mem, agent, turns, { lastStoredIndex: lastIdx });
+  lastIdx = r.lastIndex;
+}, 60_000);
+
+// 3. Before compaction: dump takeaways
+const dump = await preCompactionDump(mem, agent, turns);
+// → key moments and snapshot persisted to graph
 ```
 
 ---

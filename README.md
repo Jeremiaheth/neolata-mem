@@ -419,6 +419,48 @@ Factory function. All options are optional - zero-config returns a working insta
 | `pendingConflicts()` | List unresolved structural conflicts |
 | `resolveConflict(conflictId, opts)` | Resolve a pending conflict |
 
+### Runtime Helpers
+
+Convenience functions for agent workflows — heartbeat auto-store, contextual recall, and pre-compaction dumps.
+
+| Function | Description |
+|----------|-------------|
+| `detectKeyMoments(text, opts?)` | Extract decisions, preferences, commitments, and blockers from text |
+| `extractTopicSlug(text, opts?)` | Derive a topic slug from text (with optional synonym mapping) |
+| `heartbeatStore(mem, agent, turns, config?)` | Auto-store key moments from conversation turns on a heartbeat interval |
+| `contextualRecall(mem, agent, seedText, config?)` | Budget-aware recall: merges recent + semantic + high-importance memories by topic |
+| `preCompactionDump(mem, agent, turns, config?)` | Extract and persist takeaways before context window compaction |
+
+```javascript
+import { createMemory, heartbeatStore, contextualRecall, preCompactionDump } from '@jeremiaheth/neolata-mem';
+
+const mem = createMemory({ /* ... */ });
+
+// Heartbeat: auto-store key moments from recent turns
+const result = await heartbeatStore(mem, 'kuro', conversationTurns, {
+  sessionId: 'sess-123',
+  topicSlug: 'deployment',
+  minNewTurns: 3,         // skip if fewer than 3 new turns (default: 3)
+  lastStoredIndex: -1,    // track position across calls
+});
+// → { stored: 2, ids: [...], lastIndex: 14, moments: [...] }
+
+// Contextual recall: topic-aware, budget-capped context retrieval
+const context = await contextualRecall(mem, 'kuro', 'How did we fix the RLS issue?', {
+  maxTokens: 2000,        // token budget (default: 2000)
+  semanticCount: 8,       // semantic search results (default: 8)
+  importanceThreshold: 0.8,
+});
+// → { topicSlug: 'rls', memories: [...], totalTokens: 1823, excluded: 3 }
+
+// Pre-compaction dump: persist session takeaways before context reset
+const dump = await preCompactionDump(mem, 'kuro', conversationTurns, {
+  sessionId: 'sess-123',
+  maxTakeaways: 10,       // max individual moments to store (default: 10)
+});
+// → { takeaways: 4, snapshotId: '...', ids: [...] }
+```
+
 ### Advanced: Bring Your Own Providers
 
 ```javascript
@@ -482,6 +524,7 @@ Decay Cycle:
 | Conflict resolution | ✅ | ✅ | ❌ | ❌ |
 | Quarantine lane | ✅ | ❌ | ❌ | ❌ |
 | Predicate schemas | ✅ | ❌ | ❌ | ❌ |
+| Runtime helpers (heartbeat/recall/dump) | ✅ | ❌ | ❌ | ❌ |
 | Explainability API | ✅ | ❌ | ❌ | ❌ |
 | Episodes & compression | ✅ | ❌ | ❌ | ❌ |
 | Labeled clusters | ✅ | ❌ | ❌ | ❌ |
