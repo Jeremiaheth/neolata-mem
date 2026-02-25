@@ -11,3 +11,5 @@ neolata-mem-data/
 supabase/.temp/
 supabase/.env
 supabase/config.toml
+
+supabase/
