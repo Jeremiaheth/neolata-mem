@@ -37,6 +37,7 @@ const mem = createMemory({
   },
 });
 
+// Agent IDs like 'kuro' and 'maki' below are just examples — use any string to identify your agents.
 await mem.store('kuro', 'Found XSS vulnerability in login form', { category: 'finding', importance: 0.9 });
 await mem.store('kuro', 'OWASP Top 10 audit completed', { category: 'event' });
 

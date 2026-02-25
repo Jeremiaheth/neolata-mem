@@ -79,6 +79,7 @@ const mem = createMemory({
   },
 });
 
+// Agent IDs like 'kuro' and 'maki' are just examples — use any string.
 await mem.store('kuro', 'Found XSS in login form', { category: 'finding', importance: 0.9 });
 const results = await mem.search('kuro', 'security vulnerabilities');
 ```

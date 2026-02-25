@@ -330,6 +330,8 @@ This lets you back neolata-mem with PostgreSQL, SQLite, Redis, S3 — anything.
 
 ### Storing
 
+> **Note:** Agent IDs like `'kuro'` and `'maki'` used throughout this guide are just examples — use any string to identify your agents.
+
 ```javascript
 const result = await mem.store('kuro', 'Found XSS in login form', {
   category: 'finding',    // finding | decision | fact | insight | task | event | preference
