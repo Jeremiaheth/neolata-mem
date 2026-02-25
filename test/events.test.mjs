@@ -73,4 +73,31 @@ describe('Event Emitter', () => {
       expect(typeof ev.similarity === 'number').toBeTruthy();
     }
   });
+
+  it('should emit link events with type field', async () => {
+    // Use MemoryGraph directly to pass custom embeddings
+    const { MemoryGraph } = await import('../src/graph.mjs');
+    const { memoryStorage } = await import('../src/storage.mjs');
+    const fakeEmbed = {
+      name: 'fake', model: 'fake',
+      async embed(texts) {
+        const input = Array.isArray(texts) ? texts : [texts];
+        return input.map(t => {
+          const vec = new Array(64).fill(0);
+          for (let i = 0; i < t.length; i++) vec[i % 64] += t.charCodeAt(i) / 1000;
+          const mag = Math.sqrt(vec.reduce((a, b) => a + b * b, 0));
+          return vec.map(v => v / (mag || 1));
+        });
+      },
+    };
+    const graph = new MemoryGraph({ storage: memoryStorage(), embeddings: fakeEmbed, config: { linkThreshold: 0.1 } });
+    const events = [];
+    graph.on('link', (ev) => events.push(ev));
+    await graph.store('a', 'memory about testing');
+    await graph.store('a', 'another memory about testing code');
+    expect(events.length).toBeGreaterThan(0);
+    for (const ev of events) {
+      expect(ev.type).toBe('similar');
+    }
+  });
 });

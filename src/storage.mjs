@@ -29,6 +29,9 @@ export function jsonStorage({ dir, filename = 'graph.json' } = {}) {
 
   const graphFile = join(storePath, filename);
   const archiveFile = join(storePath, 'archived.json');
+  const episodesFile = join(storePath, 'episodes.json');
+  const clustersFile = join(storePath, 'clusters.json');
+  const pendingConflictsFile = join(storePath, 'pending-conflicts.json');
 
   return {
     name: 'json',
@@ -59,8 +62,56 @@ export function jsonStorage({ dir, filename = 'graph.json' } = {}) {
       const { rename } = await import('fs/promises');
       await rename(tmpFile, archiveFile);
     },
+    async loadEpisodes() {
+      await mkdir(storePath, { recursive: true });
+      if (!existsSync(episodesFile)) return [];
+      let raw = await readFile(episodesFile, 'utf8');
+      if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+      return JSON.parse(raw);
+    },
+    async saveEpisodes(episodes) {
+      await mkdir(storePath, { recursive: true });
+      const tmpFile = episodesFile + '.tmp.' + randomUUID().slice(0, 8);
+      await writeFile(tmpFile, JSON.stringify(episodes, null, 2), 'utf8');
+      const { rename } = await import('fs/promises');
+      await rename(tmpFile, episodesFile);
+    },
+    async loadClusters() {
+      await mkdir(storePath, { recursive: true });
+      if (!existsSync(clustersFile)) return [];
+      let raw = await readFile(clustersFile, 'utf8');
+      if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+      return JSON.parse(raw);
+    },
+    async saveClusters(clusters) {
+      await mkdir(storePath, { recursive: true });
+      const tmpFile = clustersFile + '.tmp.' + randomUUID().slice(0, 8);
+      await writeFile(tmpFile, JSON.stringify(clusters, null, 2), 'utf8');
+      const { rename } = await import('fs/promises');
+      await rename(tmpFile, clustersFile);
+    },
+    async loadPendingConflicts() {
+      await mkdir(storePath, { recursive: true });
+      if (!existsSync(pendingConflictsFile)) return [];
+      let raw = await readFile(pendingConflictsFile, 'utf8');
+      if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+      return JSON.parse(raw);
+    },
+    async savePendingConflicts(conflicts) {
+      await mkdir(storePath, { recursive: true });
+      const tmpFile = pendingConflictsFile + '.tmp.' + randomUUID().slice(0, 8);
+      await writeFile(tmpFile, JSON.stringify(conflicts, null, 2), 'utf8');
+      const { rename } = await import('fs/promises');
+      await rename(tmpFile, pendingConflictsFile);
+    },
     genId() {
       return `mem_${randomUUID()}`;
+    },
+    genEpisodeId() {
+      return `ep_${randomUUID()}`;
+    },
+    genClusterId() {
+      return `cl_${randomUUID()}`;
     },
   };
 }
@@ -72,14 +123,25 @@ export function jsonStorage({ dir, filename = 'graph.json' } = {}) {
 export function memoryStorage() {
   let data = [];
   let archive = [];
+  let episodes = [];
+  let labeledClusters = [];
+  let pendingConflicts = [];
   return {
     name: 'memory',
     async load() { return data; },
     async save(memories) { data = memories; },
     async loadArchive() { return archive; },
     async saveArchive(archived) { archive = archived; },
+    async loadEpisodes() { return episodes; },
+    async saveEpisodes(eps) { episodes = eps; },
+    async loadClusters() { return labeledClusters; },
+    async saveClusters(cls) { labeledClusters = cls; },
+    async loadPendingConflicts() { return pendingConflicts; },
+    async savePendingConflicts(conflicts) { pendingConflicts = conflicts; },
     genId() {
       return `mem_${randomUUID()}`;
     },
+    genEpisodeId() { return `ep_${randomUUID()}`; },
+    genClusterId() { return `cl_${randomUUID()}`; },
   };
 }

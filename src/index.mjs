@@ -151,12 +151,15 @@ export function createMemory(opts = {}) {
     embeddings,
     extraction,
     llm,
-    config: opts.graph || {},
+    config: {
+      ...(opts.graph || {}),
+      ...(opts.predicateSchemas !== undefined ? { predicateSchemas: opts.predicateSchemas } : {}),
+    },
   });
 }
 
 // Re-export everything for advanced usage
-export { MemoryGraph, tokenize } from './graph.mjs';
+export { MemoryGraph, tokenize, computeTrust, computeConfidence, estimateTokens, normalizeClaim } from './graph.mjs';
 export { openaiEmbeddings, noopEmbeddings, cosineSimilarity } from './embeddings.mjs';
 export { jsonStorage, memoryStorage } from './storage.mjs';
 export { supabaseStorage } from './supabase-storage.mjs';

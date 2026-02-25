@@ -116,7 +116,9 @@ for (const [name, factory] of Object.entries(backends)) {
       expect(loaded[0].id).toBe('mem_test-1');
       expect(loaded[0].memory).toBe('User prefers dark mode');
       expect(loaded[0].embedding).toEqual([0.1, 0.2, 0.3]);
-      expect(loaded[0].links).toEqual([{ id: 'mem_test-2', similarity: 0.7 }]);
+      // supabase adds type from loadLinks; memory/json preserve raw format
+      expect(loaded[0].links[0].id).toBe('mem_test-2');
+      expect(loaded[0].links[0].similarity).toBe(0.7);
       expect(loaded[1].id).toBe('mem_test-2');
     });
 
@@ -167,6 +169,41 @@ for (const [name, factory] of Object.entries(backends)) {
       expect(memories).toHaveLength(2);
       expect(archived).toHaveLength(1);
       expect(memories[0].id).not.toBe(archived[0].id);
+    });
+
+    it('should load/save episodes', async () => {
+      const s = await fresh();
+      const episodes = [{
+        id: s.genEpisodeId(),
+        name: 'Test Episode',
+        summary: null,
+        agents: ['a'],
+        memoryIds: ['mem_1'],
+        tags: [],
+        timeRange: { start: '2026-01-01', end: '2026-01-02' },
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }];
+      await s.saveEpisodes(episodes);
+      const loaded = await s.loadEpisodes();
+      expect(loaded.length).toBe(1);
+      expect(loaded[0].name).toBe('Test Episode');
+    });
+
+    it('should load/save clusters', async () => {
+      const s = await fresh();
+      const clusters = [{
+        id: s.genClusterId(),
+        label: 'Test Cluster',
+        description: null,
+        memoryIds: ['mem_1'],
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }];
+      await s.saveClusters(clusters);
+      const loaded = await s.loadClusters();
+      expect(loaded.length).toBe(1);
+      expect(loaded[0].label).toBe('Test Cluster');
     });
 
     // ── genId ──

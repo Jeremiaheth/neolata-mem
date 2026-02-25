@@ -37,6 +37,7 @@ export function supabaseStorage({
   table = 'memories',
   linksTable = 'memory_links',
   archiveTable = 'memories_archive',
+  pendingConflictsTable = 'pending_conflicts',
   fetch: customFetch,
 } = {}) {
   if (!url) throw new Error('supabaseStorage: url is required');
@@ -84,15 +85,27 @@ export function supabaseStorage({
       embedding: mem.embedding || null,
       created_at: mem.created_at,
       updated_at: mem.updated_at || mem.created_at,
+      event_at: mem.event_at || null,
       access_count: mem.accessCount || 0,
+      stability: mem.stability ?? null,
+      last_review_interval: mem.lastReviewInterval ?? null,
+      claim: mem.claim ?? null,
+      provenance: mem.provenance ?? null,
+      confidence: mem.confidence ?? null,
+      status: mem.status || 'active',
+      quarantine: mem.quarantine ?? null,
+      reinforcements: mem.reinforcements ?? 0,
+      disputes: mem.disputes ?? 0,
+      superseded_by: mem.superseded_by ?? null,
+      supersedes: mem.supersedes ?? null,
     };
   }
 
   function fromRow(row) {
     return {
       id: row.id,
-      agent: row.agent_id,
-      memory: row.content,
+      agent: row.agent_id ?? row.agent,
+      memory: row.content ?? row.memory,
       category: row.category,
       importance: row.importance,
       tags: row.tags || [],
@@ -102,7 +115,19 @@ export function supabaseStorage({
       links: [], // Links loaded separately
       created_at: row.created_at,
       updated_at: row.updated_at || row.created_at,
+      event_at: row.event_at || undefined,
       accessCount: row.access_count || 0,
+      stability: row.stability ?? undefined,
+      lastReviewInterval: row.last_review_interval ?? undefined,
+      claim: row.claim ?? undefined,
+      provenance: row.provenance ?? undefined,
+      confidence: row.confidence ?? undefined,
+      status: row.status || 'active',
+      quarantine: row.quarantine ?? undefined,
+      reinforcements: row.reinforcements ?? 0,
+      disputes: row.disputes ?? 0,
+      superseded_by: row.superseded_by ?? undefined,
+      supersedes: row.supersedes ?? undefined,
     };
   }
 
@@ -115,6 +140,7 @@ export function supabaseStorage({
       importance: mem.importance,
       tags: mem.tags || [],
       created_at: mem.created_at,
+      event_at: mem.event_at || null,
       archived_at: mem.archived_at || new Date().toISOString(),
       archived_reason: mem.archived_reason || null,
     };
@@ -130,6 +156,7 @@ export function supabaseStorage({
       tags: row.tags || [],
       links: [],
       created_at: row.created_at,
+      event_at: row.event_at || undefined,
       archived_at: row.archived_at,
       archived_reason: row.archived_reason || undefined,
     };
@@ -143,14 +170,14 @@ export function supabaseStorage({
     let offset = 0;
     while (true) {
       const batch = await request('GET',
-        `/rest/v1/${linksTable}?select=source_id,target_id,strength&limit=1000&offset=${offset}`);
+        `/rest/v1/${linksTable}?select=source_id,target_id,strength,link_type&limit=1000&offset=${offset}`);
       if (!batch || batch.length === 0) break;
       for (const l of batch) {
         // Bidirectional
         if (!linkMap.has(l.source_id)) linkMap.set(l.source_id, []);
-        linkMap.get(l.source_id).push({ id: l.target_id, similarity: l.strength });
+        linkMap.get(l.source_id).push({ id: l.target_id, similarity: l.strength, type: l.link_type || 'similar' });
         if (!linkMap.has(l.target_id)) linkMap.set(l.target_id, []);
-        linkMap.get(l.target_id).push({ id: l.source_id, similarity: l.strength });
+        linkMap.get(l.target_id).push({ id: l.source_id, similarity: l.strength, type: l.link_type || 'similar' });
       }
       if (batch.length < 1000) break;
       offset += 1000;
@@ -166,7 +193,7 @@ export function supabaseStorage({
 
     async load() {
       const rows = await request('GET',
-        `/rest/v1/${table}?select=id,agent_id,content,category,importance,tags,embedding,created_at,updated_at,access_count&order=created_at.asc&limit=50000`);
+        `/rest/v1/${table}?select=id,agent_id,agent,content,memory,category,importance,tags,embedding,created_at,updated_at,event_at,access_count,stability,last_review_interval,claim,provenance,confidence,status,quarantine,reinforcements,disputes,superseded_by,supersedes&order=created_at.asc&limit=50000`);
       const memories = (rows || []).map(fromRow);
       await loadLinks(memories);
       return memories;
@@ -213,6 +240,7 @@ export function supabaseStorage({
             source_id: mem.id,
             target_id: link.id,
             strength: link.similarity,
+            link_type: link.type || 'similar',
             created_at: mem.created_at,
           });
         }
@@ -224,7 +252,7 @@ export function supabaseStorage({
 
     async loadArchive() {
       const rows = await request('GET',
-        `/rest/v1/${archiveTable}?select=id,agent_id,content,category,importance,tags,created_at,archived_at,archived_reason&order=archived_at.asc&limit=50000`);
+        `/rest/v1/${archiveTable}?select=id,agent_id,content,category,importance,tags,created_at,event_at,archived_at,archived_reason&order=archived_at.asc&limit=50000`);
       return (rows || []).map(fromArchiveRow);
     },
 
@@ -236,8 +264,125 @@ export function supabaseStorage({
         await request('POST', `/rest/v1/${archiveTable}`, batch, { 'Prefer': 'return=minimal' });
       }
     },
+    async loadEpisodes() {
+      const epTable = table.replace('memories', 'episodes');
+      try {
+        const rows = await request('GET',
+          `/rest/v1/${epTable}?select=id,name,summary,agents,memory_ids,tags,metadata,time_range_start,time_range_end,created_at,updated_at&order=created_at.desc`);
+        return (rows || []).map(r => ({
+          id: r.id,
+          name: r.name,
+          summary: r.summary || undefined,
+          agents: r.agents || [],
+          memoryIds: r.memory_ids || [],
+          tags: r.tags || [],
+          metadata: r.metadata || undefined,
+          timeRange: { start: r.time_range_start, end: r.time_range_end },
+          created_at: r.created_at,
+          updated_at: r.updated_at,
+        }));
+      } catch {
+        return [];
+      }
+    },
+    async saveEpisodes(episodes) {
+      const epTable = table.replace('memories', 'episodes');
+      await request('DELETE', `/rest/v1/${epTable}?id=not.is.null`, null, { Prefer: 'return=minimal' });
+      if (episodes.length > 0) {
+        const rows = episodes.map(ep => ({
+          id: ep.id,
+          name: ep.name,
+          summary: ep.summary || null,
+          agents: ep.agents,
+          memory_ids: ep.memoryIds,
+          tags: ep.tags,
+          metadata: ep.metadata || null,
+          time_range_start: ep.timeRange?.start || null,
+          time_range_end: ep.timeRange?.end || null,
+          created_at: ep.created_at,
+          updated_at: ep.updated_at,
+        }));
+        await request('POST', `/rest/v1/${epTable}`, rows, { Prefer: 'return=minimal' });
+      }
+    },
+    async loadClusters() {
+      const clTable = table.replace('memories', 'memory_clusters');
+      try {
+        const rows = await request('GET',
+          `/rest/v1/${clTable}?select=id,label,description,memory_ids,created_at,updated_at&order=created_at.desc`);
+        return (rows || []).map(r => ({
+          id: r.id,
+          label: r.label,
+          description: r.description || undefined,
+          memoryIds: r.memory_ids || [],
+          created_at: r.created_at,
+          updated_at: r.updated_at,
+        }));
+      } catch {
+        return [];
+      }
+    },
+    async saveClusters(clusters) {
+      const clTable = table.replace('memories', 'memory_clusters');
+      await request('DELETE', `/rest/v1/${clTable}?id=not.is.null`, null, { Prefer: 'return=minimal' });
+      if (clusters.length > 0) {
+        const rows = clusters.map(cl => ({
+          id: cl.id,
+          label: cl.label,
+          description: cl.description || null,
+          memory_ids: cl.memoryIds,
+          created_at: cl.created_at,
+          updated_at: cl.updated_at,
+        }));
+        await request('POST', `/rest/v1/${clTable}`, rows, { Prefer: 'return=minimal' });
+      }
+    },
+    async loadPendingConflicts() {
+      try {
+        const rows = await request('GET',
+          `/rest/v1/${pendingConflictsTable}?select=id,new_id,existing_id,new_trust,existing_trust,new_claim,existing_claim,created_at,resolved_at,resolution&order=created_at.asc`);
+        return (rows || []).map(r => ({
+          id: r.id,
+          newId: r.new_id,
+          existingId: r.existing_id,
+          newTrust: r.new_trust,
+          existingTrust: r.existing_trust,
+          newClaim: r.new_claim ?? undefined,
+          existingClaim: r.existing_claim ?? undefined,
+          created_at: r.created_at,
+          resolved_at: r.resolved_at ?? undefined,
+          resolution: r.resolution ?? undefined,
+        }));
+      } catch {
+        return [];
+      }
+    },
+    async savePendingConflicts(conflicts) {
+      const rows = (conflicts || []).map(c => ({
+        id: c.id,
+        new_id: c.newId,
+        existing_id: c.existingId,
+        new_trust: c.newTrust,
+        existing_trust: c.existingTrust,
+        new_claim: c.newClaim ?? null,
+        existing_claim: c.existingClaim ?? null,
+        created_at: c.created_at,
+        resolved_at: c.resolved_at ?? null,
+        resolution: c.resolution ?? null,
+      }));
+      await request('DELETE', `/rest/v1/${pendingConflictsTable}?id=not.is.null`, null, { Prefer: 'return=minimal' });
+      if (rows.length > 0) {
+        await request('POST', `/rest/v1/${pendingConflictsTable}`, rows, { Prefer: 'return=minimal' });
+      }
+    },
 
     genId() {
+      return randomUUID();
+    },
+    genEpisodeId() {
+      return randomUUID();
+    },
+    genClusterId() {
       return randomUUID();
     },
 
@@ -257,36 +402,68 @@ export function supabaseStorage({
      * @param {number} [opts.minSimilarity=0.3]
      * @returns {Promise<Array|null>} Results or null if RPC unavailable
      */
-    async search(embedding, { agent = null, limit = 10, minSimilarity = 0.3 } = {}) {
-      try {
-        const rpcName = agent ? 'search_memories_semantic' : 'search_memories_global';
-        const body = agent
-          ? { agent, query_embedding: JSON.stringify(embedding), match_count: limit, min_similarity: minSimilarity }
-          : { query_embedding: JSON.stringify(embedding), match_count: limit, min_similarity: minSimilarity };
-        const results = await request('POST', `/rest/v1/rpc/${rpcName}`, body);
-        if (!results || !Array.isArray(results)) return null;
-        return results.map(r => ({
-          id: r.id,
-          agent: r.agent_id,
-          memory: r.content,
-          category: r.category,
-          importance: r.importance,
-          tags: r.tags || [],
-          created_at: r.created_at,
-          updated_at: r.updated_at,
-          score: r.similarity,
-        }));
-      } catch (err) {
-        // Distinguish "RPC doesn't exist" (safe fallback) from real errors
-        const msg = err?.message || '';
-        if (msg.includes('404') || msg.includes('not found') || msg.includes('does not exist')) {
-          // RPC not deployed — fall back to client-side search silently
-          return null;
-        }
-        // Auth or server errors — log but still fall back (don't break search)
-        console.error(`[supabase-search] RPC failed (falling back to client-side): ${msg.slice(0, 200)}`);
-        return null;
+    async search(embedding, { agent = null, limit = 10, minSimilarity = 0.3, status = 'active' } = {}) {
+      const jsonEmbedding = JSON.stringify(embedding);
+      const attempts = [
+        {
+          rpc: 'search_memories_semantic',
+          body: {
+            query_embedding: jsonEmbedding,
+            match_threshold: minSimilarity,
+            match_count: limit,
+            filter_agent: agent,
+            filter_status: status,
+          },
+        },
+        {
+          rpc: 'search_memories_semantic',
+          body: agent
+            ? { agent, query_embedding: jsonEmbedding, match_count: limit, min_similarity: minSimilarity }
+            : { query_embedding: jsonEmbedding, match_count: limit, min_similarity: minSimilarity },
+        },
+      ];
+      if (!agent) {
+        attempts.push({
+          rpc: 'search_memories_global',
+          body: { query_embedding: jsonEmbedding, match_count: limit, min_similarity: minSimilarity },
+        });
       }
+
+      let firstErr = null;
+      for (const attempt of attempts) {
+        try {
+          const results = await request('POST', `/rest/v1/rpc/${attempt.rpc}`, attempt.body);
+          if (!results || !Array.isArray(results)) continue;
+          return results.map(r => ({
+            id: r.id,
+            agent: r.agent_id ?? r.agent,
+            memory: r.content ?? r.memory,
+            category: r.category,
+            importance: r.importance,
+            tags: r.tags || [],
+            claim: r.claim ?? undefined,
+            provenance: r.provenance ?? undefined,
+            confidence: r.confidence ?? undefined,
+            status: r.status || 'active',
+            quarantine: r.quarantine ?? undefined,
+            reinforcements: r.reinforcements ?? 0,
+            disputes: r.disputes ?? 0,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+            score: r.similarity,
+          }));
+        } catch (err) {
+          if (!firstErr) firstErr = err;
+        }
+      }
+
+      if (firstErr) {
+        const msg = firstErr?.message || '';
+        if (!(msg.includes('404') || msg.includes('not found') || msg.includes('does not exist'))) {
+          console.error(`[supabase-search] RPC failed (falling back to client-side): ${msg.slice(0, 200)}`);
+        }
+      }
+      return null;
     },
 
     /**
@@ -323,6 +500,7 @@ export function supabaseStorage({
         source_id: sourceId,
         target_id: l.id,
         strength: l.similarity,
+        link_type: l.type || 'similar',
         created_at: new Date().toISOString(),
       }));
       await request('POST', `/rest/v1/${linksTable}`, rows, {
