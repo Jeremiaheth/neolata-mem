@@ -21,7 +21,7 @@ Graph-native memory for AI agents with hybrid search, biological decay, and zero
 
 **npm package:** `@jeremiaheth/neolata-mem`
 **Repository:** [github.com/Jeremiaheth/neolata-mem](https://github.com/Jeremiaheth/neolata-mem)
-**License:** MIT | **Tests:** 144/144 passing | **Node:** ≥18
+**License:** MIT | **Tests:** 333/333 passing (29 files) | **Node:** ≥18
 
 ## When to Use This Skill
 
@@ -112,14 +112,47 @@ const path = await mem.path(idA, idB);       // Shortest path between memories
 const clusters = await mem.clusters();        // Detect topic clusters
 ```
 
-### Conflict Resolution
-Detect contradictions before storing:
+### Conflict Resolution & Quarantine
+Detect contradictions before storing — with claim-based structural detection or LLM-based semantic detection:
 ```javascript
-const conflicts = await mem.detectConflicts('agent', 'Server uses port 443');
-// Returns: { conflicts: [...], updates: [...], novel: true/false }
+// Structural (no LLM needed): claim-based conflict detection
+await mem.store('agent', 'Server uses port 443', {
+  claim: { subject: 'server', predicate: 'port', value: '443' },
+  provenance: { source: 'user_explicit', trust: 1.0 },
+  onConflict: 'quarantine',  // low-trust conflicts quarantined for review
+});
 
+// Semantic (requires LLM): LLM classifies as conflict/update/novel
 await mem.evolve('agent', 'Server now uses port 8080');
-// Archives old fact, stores new one with link to predecessor
+
+// Review quarantined memories
+const quarantined = await mem.listQuarantined();
+await mem.reviewQuarantine(quarantined[0].id, { action: 'activate' });
+```
+
+### Predicate Schema Registry
+Define per-predicate rules for conflict handling, normalization, and deduplication:
+```javascript
+const mem = createMemory({
+  predicateSchemas: {
+    'preferred_language': { cardinality: 'single', conflictPolicy: 'supersede', normalize: 'lowercase_trim' },
+    'spoken_languages':   { cardinality: 'multi', dedupPolicy: 'corroborate' },
+    'salary':             { cardinality: 'single', conflictPolicy: 'require_review', normalize: 'currency' },
+  },
+});
+```
+
+Options: `cardinality` (single/multi), `conflictPolicy` (supersede/require_review/keep_both), `normalize` (none/trim/lowercase/lowercase_trim/currency), `dedupPolicy` (corroborate/store).
+
+### Explainability API
+Understand why search returned or filtered specific memories:
+```javascript
+const results = await mem.search('agent', 'query', { explain: true });
+console.log(results.meta);        // query options, result count
+console.log(results[0].explain);  // retrieved, rerank, statusFilter details
+
+const detail = await mem.explainMemory(memoryId);
+// { id, status, trust, confidence, provenance, claimSummary }
 ```
 
 ### Multi-Agent Support
@@ -127,6 +160,33 @@ await mem.evolve('agent', 'Server now uses port 8080');
 await mem.store('kuro', 'Vuln found in API gateway');
 await mem.store('maki', 'API gateway deployed to prod');
 const all = await mem.searchAll('API gateway');  // Cross-agent search
+```
+
+### Episodes (Temporal Grouping)
+Group related memories into named episodes:
+```javascript
+const ep = await mem.createEpisode('Deploy v2.0', [id1, id2, id3], { tags: ['deploy'] });
+const ep2 = await mem.captureEpisode('kuro', 'Standup', { start: '...', end: '...' });
+const results = await mem.searchEpisode(ep.id, 'database migration');
+const { summary } = await mem.summarizeEpisode(ep.id);  // requires LLM
+```
+
+### Memory Compression & Consolidation
+Consolidate redundant memories into digests:
+```javascript
+await mem.compress([id1, id2, id3], { method: 'llm', archiveOriginals: true });
+await mem.compressEpisode(episodeId);
+await mem.autoCompress({ minClusterSize: 3, maxDigests: 5 });
+
+// Full maintenance: dedup → contradictions → corroborate → compress → prune
+await mem.consolidate({ dedupThreshold: 0.95, compressAge: 30, pruneAge: 90 });
+```
+
+### Labeled Clusters
+Persistent named groups:
+```javascript
+await mem.createCluster('Security findings', [id1, id2]);
+await mem.autoLabelClusters();  // LLM labels unlabeled clusters
 ```
 
 ### Event Emitter
@@ -212,6 +272,11 @@ await mem.decay();
 | Memory decay | ✅ | ❌ | ❌ |
 | Memory graph / linking | ✅ | ❌ | ❌ |
 | Conflict resolution | ✅ | Partial | ❌ |
+| Quarantine lane | ✅ | ❌ | ❌ |
+| Predicate schemas | ✅ | ❌ | ❌ |
+| Explainability API | ✅ | ❌ | ❌ |
+| Episodes & compression | ✅ | ❌ | ❌ |
+| Labeled clusters | ✅ | ❌ | ❌ |
 | Multi-agent | ✅ | ✅ | Per-agent |
 | Zero infrastructure | ✅ | ❌ | ✅ |
 | Event emitter | ✅ | ❌ | ❌ |

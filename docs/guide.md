@@ -14,12 +14,19 @@
 6. [Memory Lifecycle](#memory-lifecycle)
 7. [Graph Queries](#graph-queries)
 8. [Conflict Resolution & Evolution](#conflict-resolution--evolution)
-9. [Context Generation (RAG)](#context-generation-rag)
-10. [CLI Reference](#cli-reference)
-11. [OpenClaw Integration](#openclaw-integration)
-12. [Recipes](#recipes)
-13. [Troubleshooting](#troubleshooting)
-14. [Architecture](#architecture)
+9. [Predicate Schema Registry](#predicate-schema-registry)
+10. [Quarantine Lane](#quarantine-lane)
+11. [Explainability API](#explainability-api)
+12. [Episodes (Temporal Grouping)](#episodes-temporal-grouping)
+13. [Memory Compression](#memory-compression)
+14. [Labeled Clusters](#labeled-clusters)
+15. [Consolidation (Full Maintenance)](#consolidation-full-maintenance)
+16. [Context Generation (RAG)](#context-generation-rag)
+17. [CLI Reference](#cli-reference)
+18. [OpenClaw Integration](#openclaw-integration)
+19. [Recipes](#recipes)
+20. [Troubleshooting](#troubleshooting)
+21. [Architecture](#architecture)
 
 ---
 
@@ -136,6 +143,22 @@ This unlocks: semantic search, conflict resolution (`evolve`), and fact extracti
 | `maxMemoryLength` | `number` | `10000` | Max characters per memory text |
 | `maxAgentLength` | `number` | `64` | Max agent name length |
 | `evolveMinIntervalMs` | `number` | `1000` | Min milliseconds between `evolve()` calls (rate limiting) |
+| `maxBatchSize` | `number` | `1000` | Max items per `storeMany()` call |
+| `maxQueryBatchSize` | `number` | `100` | Max queries per `searchMany()` call |
+| `stabilityGrowth` | `number` | `2.0` | Spaced repetition growth factor for `reinforce()` |
+
+### `predicateSchemas` — Per-predicate conflict rules
+
+Pass a plain object (or `Map`) of predicate name → schema:
+
+```javascript
+predicateSchemas: {
+  'preferred_language': { cardinality: 'single', conflictPolicy: 'supersede', normalize: 'lowercase_trim' },
+  'spoken_languages': { cardinality: 'multi', dedupPolicy: 'corroborate' },
+}
+```
+
+See [Predicate Schema Registry](#predicate-schema-registry) for full details.
 
 ---
 
@@ -252,13 +275,16 @@ storage: {
 **Tables created by schema.sql:**
 | Table | Purpose |
 |---|---|
-| `memories` | Active memories with embeddings |
-| `memory_links` | Bidirectional links between memories |
+| `memories` | Active memories with embeddings, claims, provenance, quarantine |
+| `memory_links` | Bidirectional links between memories (with `link_type`) |
 | `memories_archive` | Archived/decayed memories |
+| `episodes` | Temporal memory groupings |
+| `memory_clusters` | Labeled memory clusters |
+| `pending_conflicts` | Unresolved structural conflicts for manual review |
 
 **RPCs (optional, improves search performance):**
-- `search_memories_semantic(agent, embedding, count, min_similarity)` — agent-scoped search
-- `search_memories_global(embedding, count, min_similarity)` — cross-agent search
+- `search_memories_semantic(query_embedding, match_threshold, match_count, filter_agent, filter_status)` — with status filtering
+- `search_memories_global(query_embedding, match_count, min_similarity)` — cross-agent search (legacy fallback)
 
 ### Custom Storage (BYO)
 
@@ -271,6 +297,16 @@ const myStorage = {
   async loadArchive() { /* return Memory[] */ },
   async saveArchive(memories) { /* persist */ },
   genId() { /* return unique string */ },
+
+  // Optional: episodes, clusters, pending conflicts
+  async loadEpisodes() { /* return Episode[] */ },
+  async saveEpisodes(episodes) { /* persist */ },
+  genEpisodeId() { /* return unique string */ },
+  async loadClusters() { /* return Cluster[] */ },
+  async saveClusters(clusters) { /* persist */ },
+  genClusterId() { /* return unique string */ },
+  async loadPendingConflicts() { /* return Conflict[] */ },
+  async savePendingConflicts(conflicts) { /* persist */ },
 
   // Optional: incremental operations (skip full save cycles)
   incremental: true,
@@ -452,6 +488,434 @@ memory.evolution = [
 
 > **Requires:** `llm` config. Without it, `evolve()` falls back to regular `store()`.
 
+### Structural Conflict Detection (Claim-based)
+
+When memories include `claim` metadata, `store()` can detect structural conflicts without an LLM — by matching `subject + predicate + scope`:
+
+```javascript
+await mem.store('a', 'Server runs on port 3000', {
+  claim: { subject: 'server', predicate: 'port', value: '3000' },
+  provenance: { source: 'user_explicit', trust: 1.0 },
+});
+
+await mem.store('a', 'Server runs on port 8080', {
+  claim: { subject: 'server', predicate: 'port', value: '8080' },
+  provenance: { source: 'inference', trust: 0.5 },
+  onConflict: 'quarantine',  // default
+});
+// Second memory is quarantined (lower trust than existing)
+```
+
+**Trust scoring:**
+```
+trust = sourceWeight + corroborationBonus + feedbackSignal - recencyPenalty
+
+Source weights:
+  user_explicit: 1.0, system: 0.95, tool_output: 0.85,
+  user_implicit: 0.7, document: 0.6, inference: 0.5
+```
+
+The `onConflict` option controls what happens when a structural conflict is detected:
+- `'quarantine'` (default) — low-trust memories are quarantined for human review
+- `'keep_active'` — store normally regardless of conflicts (v0.7 behavior)
+
+### Claim Object
+
+```javascript
+{
+  subject: 'server',           // What the claim is about
+  predicate: 'port',           // The property/attribute
+  value: '8080',               // The claimed value
+  scope: 'global',             // 'global' | 'session' | 'temporal' (default: 'global')
+  sessionId: 'sess_123',       // Required when scope is 'session'
+  validFrom: '2026-01-01',     // ISO date — temporal validity start
+  validUntil: '2026-12-31',    // ISO date — temporal validity end
+  exclusive: true,             // Whether this claim replaces others (default: true for 'single')
+}
+```
+
+---
+
+## Predicate Schema Registry
+
+Define per-predicate rules for conflict handling, normalization, and deduplication:
+
+```javascript
+const mem = createMemory({
+  predicateSchemas: {
+    'preferred_language': { cardinality: 'single', conflictPolicy: 'supersede', normalize: 'lowercase_trim' },
+    'spoken_languages':   { cardinality: 'multi', dedupPolicy: 'corroborate' },
+    'salary':             { cardinality: 'single', conflictPolicy: 'require_review', normalize: 'currency' },
+    'timezone':           { cardinality: 'single', normalize: 'trim' },
+  },
+});
+```
+
+Or register at runtime:
+
+```javascript
+mem.registerPredicate('preferred_name', { cardinality: 'single', normalize: 'trim' });
+mem.registerPredicates({
+  'email': { cardinality: 'single', normalize: 'lowercase_trim' },
+  'hobby': { cardinality: 'multi', dedupPolicy: 'corroborate' },
+});
+```
+
+### Schema Options
+
+| Key | Values | Default | Description |
+|-----|--------|---------|-------------|
+| `cardinality` | `'single'`, `'multi'` | `'single'` | `multi` skips structural conflict checks |
+| `conflictPolicy` | `'supersede'`, `'require_review'`, `'keep_both'` | `'supersede'` | What happens on conflict |
+| `normalize` | `'none'`, `'trim'`, `'lowercase'`, `'lowercase_trim'`, `'currency'` | `'none'` | Value normalizer applied to claims |
+| `dedupPolicy` | `'corroborate'`, `'store'` | `'corroborate'` | What happens when an identical claim is stored again |
+
+### Built-in Normalizers
+
+- **`none`** — no transformation
+- **`trim`** — whitespace trimming
+- **`lowercase`** — lowercases the value
+- **`lowercase_trim`** — lowercase + trim
+- **`currency`** — parses currency strings (e.g. `"$1,234.56"` → `"USD 1234.56"`). Supports USD, EUR, GBP, JPY, CAD, AUD, INR.
+
+### Conflict Policies
+
+- **`supersede`** — higher-trust memory automatically supersedes lower-trust
+- **`require_review`** — conflict is added to pending conflicts queue for manual resolution
+- **`keep_both`** — both memories remain active (no conflict)
+
+---
+
+## Quarantine Lane
+
+Low-trust memories or those flagged by predicate schemas are quarantined for human review:
+
+```javascript
+// Automatically quarantined (low trust vs existing)
+await mem.store('a', 'Server port is 9999', {
+  claim: { subject: 'server', predicate: 'port', value: '9999' },
+  provenance: { source: 'inference', trust: 0.5 },
+});
+
+// Manually quarantine
+await mem.quarantine(memoryId, { reason: 'manual', details: 'Suspicious source' });
+
+// List quarantined
+const quarantined = await mem.listQuarantined({ agent: 'a', limit: 20 });
+
+// Review: activate (re-runs conflict checks) or reject (archives)
+await mem.reviewQuarantine(memoryId, { action: 'activate' });
+await mem.reviewQuarantine(memoryId, { action: 'reject', reason: 'Incorrect info' });
+```
+
+### Quarantine Reasons
+
+| Reason | Description |
+|--------|-------------|
+| `trust_insufficient` | New memory's trust score is lower than existing conflicting memory |
+| `predicate_requires_review` | Predicate schema has `conflictPolicy: 'require_review'` |
+| `suspicious_input` | Flagged by custom logic |
+| `manual` | Manually quarantined via `quarantine()` |
+
+### Pending Conflicts
+
+When `conflictPolicy` is `require_review` or trust scores are too close:
+
+```javascript
+const conflicts = await mem.pendingConflicts();
+// [{ id, newId, existingId, newTrust, existingTrust, newClaim, existingClaim, created_at }]
+
+await mem.resolveConflict(conflicts[0].id, { winner: 'new' });
+// or: { winner: 'existing' }
+```
+
+---
+
+## Explainability API
+
+Understand why search returned (or filtered) specific memories. Zero overhead when not enabled.
+
+### Search Explain Mode
+
+```javascript
+const results = await mem.search('kuro', 'server config', { explain: true });
+
+// Array-level metadata
+console.log(results.meta);
+// {
+//   query: 'server config',
+//   options: { limit, minSimilarity, statusFilter, ... },
+//   resultCount: 5,
+//   ...
+// }
+
+// Per-result explanation
+console.log(results[0].explain);
+// {
+//   retrieved: true,       // Was this memory retrieved from vector/keyword search?
+//   rerank: { ... },       // Reranking details (position changes, score adjustments)
+//   statusFilter: 'pass',  // 'pass' | 'filtered' — status filter result
+// }
+```
+
+### Memory Explanation
+
+```javascript
+const detail = await mem.explainMemory(memoryId);
+// {
+//   id, status, trust, confidence,
+//   provenance: { source, trust, corroboration },
+//   claimSummary: { subject, predicate, value, normalizedValue, scope, ... }
+// }
+```
+
+### Supersession Chain
+
+```javascript
+const chain = await mem.explainSupersession(memoryId);
+// {
+//   id, status, superseded: true,
+//   supersededBy: { id, status, trust, confidence, claimSummary },
+//   trustComparison: { original: 0.5, superseding: 1.0, delta: 0.5 }
+// }
+```
+
+---
+
+## Episodes (Temporal Grouping)
+
+Episodes group related memories into named units with time ranges — useful for "what happened during X" queries, session summaries, and context compression.
+
+### Creating Episodes
+
+```javascript
+// Manual: pick specific memories
+const ep = await mem.createEpisode('Deploy v2.0', [id1, id2, id3], {
+  summary: 'Optional initial summary',
+  tags: ['deploy', 'production'],
+  metadata: { ticket: 'JIRA-123' },
+});
+// { id, name, memberCount, timeRange: { start, end } }
+
+// Auto-capture: grab all memories for an agent within a time window
+const ep2 = await mem.captureEpisode('kuro', 'Morning standup', {
+  start: '2026-02-25T09:00:00Z',
+  end: '2026-02-25T10:00:00Z',
+  minMemories: 2,  // default — throws if fewer found
+  tags: ['standup'],
+});
+```
+
+### Querying Episodes
+
+```javascript
+// List episodes (filter by agent, tag, time)
+const episodes = await mem.listEpisodes({
+  agent: 'kuro',        // only episodes containing this agent
+  tag: 'deploy',        // only episodes with this tag
+  before: '2026-03-01', // end time filter
+  after: '2026-02-01',  // start time filter
+  limit: 20,
+});
+// [{ id, name, summary, agents, memberCount, tags, timeRange, created_at }]
+
+// Get episode with resolved memories
+const ep = await mem.getEpisode(episodeId);
+// { ...episode, memories: [{ id, memory, agent, category, importance, created_at, event_at }] }
+
+// Search within an episode (semantic or keyword)
+const results = await mem.searchEpisode(episodeId, 'database migration', { limit: 5 });
+// [{ id, memory, agent, category, score }]
+```
+
+### Modifying Episodes
+
+```javascript
+await mem.addToEpisode(episodeId, [newId1, newId2]);
+// { added: 2, memberCount: 5 }
+
+await mem.removeFromEpisode(episodeId, [oldId]);
+// { removed: 1, memberCount: 4 }
+
+await mem.deleteEpisode(episodeId);
+// { deleted: true } — memories are preserved
+```
+
+### Summarizing Episodes
+
+Requires an LLM provider:
+
+```javascript
+const { summary } = await mem.summarizeEpisode(episodeId);
+// Stores the summary on the episode and returns it
+```
+
+The LLM prompt is XML-fenced to prevent injection from memory content.
+
+---
+
+## Memory Compression
+
+Compress redundant or stale memories into digest memories. Two methods:
+- **`extractive`** (default) — takes highest-importance memory as base, appends unique info from others
+- **`llm`** — LLM generates a comprehensive summary (requires LLM provider)
+
+### Manual Compression
+
+```javascript
+const digest = await mem.compress([id1, id2, id3], {
+  method: 'llm',           // 'extractive' (default) or 'llm'
+  archiveOriginals: true,   // move source memories to archive
+  agent: 'kuro',           // agent for the digest (default: most common agent)
+});
+// { id, summary, sourceCount: 3, archived: 3 }
+```
+
+The digest memory:
+- Has `category: 'digest'`
+- Has `compressed: { sourceIds, sourceCount, method, compressed_at }`
+- Links to sources via `digest_of` / `digested_into` link types
+- Inherits the highest importance and merged tags from sources
+
+### Episode & Cluster Compression
+
+```javascript
+// Compress all memories in an episode
+await mem.compressEpisode(episodeId, { method: 'extractive' });
+
+// Compress an auto-detected cluster (from clusters() output)
+await mem.compressCluster(0, { method: 'llm', minSize: 3 });
+```
+
+### Auto-Compression
+
+Automatically detect and compress compressible memory groups:
+
+```javascript
+const result = await mem.autoCompress({
+  maxDigests: 5,          // max clusters to compress per call
+  minClusterSize: 3,      // minimum cluster size
+  archiveOriginals: false, // keep originals
+  agent: 'kuro',          // only clusters where this agent dominates
+  method: 'extractive',
+});
+// { compressed: 3, totalSourceMemories: 15, digests: [{ id, sourceCount }] }
+```
+
+Skips clusters that already contain a digest memory.
+
+---
+
+## Labeled Clusters
+
+Persistent named groups of memories (distinct from `clusters()` which auto-detects connected components).
+
+### Creating & Managing Clusters
+
+```javascript
+// Create from specific memories
+const cl = await mem.createCluster('Security findings', [id1, id2], {
+  description: 'XSS and CSRF findings from audit',
+});
+// { id, label, memberCount }
+
+// Label an auto-detected cluster (by index from clusters())
+await mem.labelCluster(0, 'Infrastructure', { description: 'Server configs' });
+
+// List all labeled clusters
+const clusters = await mem.listClusters();
+// [{ id, label, description, memberCount, created_at }]
+
+// Get with resolved memories
+const cl2 = await mem.getCluster(clusterId);
+// { ...cluster, memories: [{ id, memory, agent, category, importance }] }
+
+// Re-expand cluster membership via BFS from existing members
+const result = await mem.refreshCluster(clusterId);
+// { id, memberCount, added: 3, removed: 0 }
+
+// Delete (memories preserved)
+await mem.deleteCluster(clusterId);
+```
+
+### Auto-Labeling
+
+LLM generates labels for unlabeled auto-detected clusters:
+
+```javascript
+const result = await mem.autoLabelClusters({ minSize: 3, maxClusters: 10 });
+// { labeled: 4, clusters: [{ id, label, memberCount }] }
+```
+
+---
+
+## Consolidation (Full Maintenance)
+
+`consolidate()` runs the complete memory maintenance lifecycle in one call:
+
+```javascript
+const report = await mem.consolidate({
+  dryRun: false,               // preview without making changes
+  dedupThreshold: 0.95,        // similarity threshold for dedup
+  compressAge: 30,             // compress clusters older than N days
+  pruneSuperseded: true,       // archive old superseded memories
+  pruneQuarantined: false,     // archive old unreviewed quarantined memories
+  quarantineMaxAgeDays: 30,    // max age for quarantined memories before pruning
+  pruneAge: 90,                // archive superseded memories older than N days
+  method: 'extractive',        // compression method
+});
+```
+
+### Consolidation Phases
+
+1. **Dedup** — find near-identical active memories (cosine sim ≥ `dedupThreshold`). Keep higher-trust, merge tags/links, corroborate. Lower-trust marked `superseded`.
+
+2. **Structural contradiction check** — for claim-bearing memories, find conflicting `(subject, predicate)` pairs. Higher trust supersedes lower; equal trust → pending conflict.
+
+3. **Cross-source corroboration** — memories with sim >0.9 but <`dedupThreshold` from different sources boost each other's `provenance.corroboration`.
+
+4. **Compress stale clusters** — auto-detect clusters where all memories are older than `compressAge` days; compress up to 5 clusters per run. Skips clusters already containing digests.
+
+5. **Prune** — archive to `memories_archive`:
+   - Superseded memories older than `pruneAge` days
+   - Disputed memories with trust < 0.2
+   - Quarantined memories older than `quarantineMaxAgeDays` with zero access (only when `pruneQuarantined: true`)
+   - Decayed memories below `deleteThreshold`
+
+### Report Shape
+
+```javascript
+{
+  deduplicated: 3,
+  contradictions: { resolved: 1, pending: 0 },
+  corroborated: 2,
+  compressed: { clusters: 1, sourceMemories: 4 },
+  pruned: { superseded: 5, decayed: 2, disputed: 0, quarantined: 0 },
+  before: { total: 50, active: 45 },
+  after: { total: 40, active: 38 },
+  duration_ms: 234,
+}
+```
+
+### Recommended Schedule
+
+```javascript
+// Daily: decay + evolve (lightweight)
+await mem.decay();
+
+// Weekly: full consolidation
+await mem.consolidate({ dryRun: false });
+
+// Monthly: aggressive consolidation with archiving
+await mem.consolidate({
+  compressAge: 14,
+  pruneAge: 60,
+  pruneQuarantined: true,
+  quarantineMaxAgeDays: 14,
+  method: 'llm',  // higher quality summaries for long-term
+});
+```
+
 ---
 
 ## Context Generation (RAG)
@@ -590,6 +1054,14 @@ mem.on('search', ({ agent, query, resultCount }) => {
 
 mem.on('link', ({ sourceId, targetId, similarity }) => {
   // Graph visualization updates, etc.
+});
+
+mem.on('quarantine', ({ id, reason }) => {
+  console.log(`Memory ${id} quarantined: ${reason}`);
+});
+
+mem.on('supersede', ({ newId, existingId }) => {
+  console.log(`Memory ${existingId} superseded by ${newId}`);
 });
 ```
 
@@ -823,30 +1295,37 @@ For production deployments with multiple users, use the Supabase backend with pr
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────┐
-│                    createMemory()                     │
-│                    (src/index.mjs)                    │
-└───────────────────────┬──────────────────────────────┘
-                        │
-                        ▼
-┌──────────────────────────────────────────────────────┐
-│                    MemoryGraph                        │
-│                   (src/graph.mjs)                     │
-│                                                      │
-│  store() ─────► embed ─► find-links ─► persist       │
-│  search() ────► embed ─► rank ─► return              │
-│  evolve() ────► embed ─► find-conflicts ─► LLM ─► …  │
-│  decay() ─────► score ─► archive/delete              │
-│  traverse() ──► BFS walk                             │
-│  context() ───► search ─► hop-expand ─► format       │
-│                                                      │
-│  Events: store, search, decay, link                  │
-└──┬────────┬────────┬────────┬────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                       createMemory()                         │
+│                       (src/index.mjs)                        │
+└──────────────────────────┬───────────────────────────────────┘
+                           │
+                           ▼
+┌──────────────────────────────────────────────────────────────┐
+│                       MemoryGraph                            │
+│                      (src/graph.mjs)                         │
+│                                                              │
+│  store() ─────► embed ─► link ─► claim conflict check ─► …  │
+│  search() ────► embed ─► rank ─► [explain] ─► return         │
+│  evolve() ────► embed ─► find-conflicts ─► LLM ─► …         │
+│  decay() ─────► score ─► archive/delete                      │
+│  traverse() ──► BFS walk                                     │
+│  context() ───► search ─► hop-expand ─► format               │
+│  quarantine() ► status → quarantined ─► reviewQuarantine()   │
+│  consolidate() ► compress + decay + prune                    │
+│                                                              │
+│  Predicate Schemas ─► normalize claims ─► conflict routing   │
+│  Explainability ────► per-result explain + meta              │
+│  Quarantine Lane ───► trust gating ─► human review           │
+│                                                              │
+│  Events: store, search, decay, link                          │
+└──┬────────┬────────┬────────┬────────────────────────────────┘
    │        │        │        │
    ▼        ▼        ▼        ▼
 Storage  Embeddings  LLM   Extraction
 (json/   (openai/   (openai) (llm/
- memory)  noop)              passthrough)
+ memory/  noop)              passthrough)
+ supabase)
 ```
 
 All providers are injected — swap any layer without touching the core engine.
