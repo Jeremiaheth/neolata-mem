@@ -85,7 +85,6 @@ export function supabaseStorage({
       embedding: mem.embedding || null,
       created_at: mem.created_at,
       updated_at: mem.updated_at || mem.created_at,
-      event_at: mem.event_at || null,
       access_count: mem.accessCount || 0,
       stability: mem.stability ?? null,
       last_review_interval: mem.lastReviewInterval ?? null,
@@ -115,7 +114,6 @@ export function supabaseStorage({
       links: [], // Links loaded separately
       created_at: row.created_at,
       updated_at: row.updated_at || row.created_at,
-      event_at: row.event_at || undefined,
       accessCount: row.access_count || 0,
       stability: row.stability ?? undefined,
       lastReviewInterval: row.last_review_interval ?? undefined,
@@ -140,7 +138,6 @@ export function supabaseStorage({
       importance: mem.importance,
       tags: mem.tags || [],
       created_at: mem.created_at,
-      event_at: mem.event_at || null,
       archived_at: mem.archived_at || new Date().toISOString(),
       archived_reason: mem.archived_reason || null,
     };
@@ -156,7 +153,6 @@ export function supabaseStorage({
       tags: row.tags || [],
       links: [],
       created_at: row.created_at,
-      event_at: row.event_at || undefined,
       archived_at: row.archived_at,
       archived_reason: row.archived_reason || undefined,
     };
@@ -170,7 +166,7 @@ export function supabaseStorage({
     let offset = 0;
     while (true) {
       const batch = await request('GET',
-        `/rest/v1/${linksTable}?select=source_id,target_id,strength,link_type&limit=1000&offset=${offset}`);
+        `/rest/v1/${linksTable}?select=source_id,target_id,strength&limit=1000&offset=${offset}`);
       if (!batch || batch.length === 0) break;
       for (const l of batch) {
         // Bidirectional
@@ -193,7 +189,7 @@ export function supabaseStorage({
 
     async load() {
       const rows = await request('GET',
-        `/rest/v1/${table}?select=id,agent_id,agent,content,memory,category,importance,tags,embedding,created_at,updated_at,event_at,access_count,stability,last_review_interval,claim,provenance,confidence,status,quarantine,reinforcements,disputes,superseded_by,supersedes&order=created_at.asc&limit=50000`);
+        `/rest/v1/${table}?select=id,agent_id,content,category,importance,tags,embedding,created_at,updated_at,access_count,stability,last_review_interval,claim,provenance,confidence,status,quarantine,reinforcements,disputes,superseded_by,supersedes,compressed&order=created_at.asc&limit=50000`);
       const memories = (rows || []).map(fromRow);
       await loadLinks(memories);
       return memories;
@@ -240,7 +236,6 @@ export function supabaseStorage({
             source_id: mem.id,
             target_id: link.id,
             strength: link.similarity,
-            link_type: link.type || 'similar',
             created_at: mem.created_at,
           });
         }
@@ -252,7 +247,7 @@ export function supabaseStorage({
 
     async loadArchive() {
       const rows = await request('GET',
-        `/rest/v1/${archiveTable}?select=id,agent_id,content,category,importance,tags,created_at,event_at,archived_at,archived_reason&order=archived_at.asc&limit=50000`);
+        `/rest/v1/${archiveTable}?select=id,agent_id,content,category,importance,tags,created_at,archived_at,archived_reason&order=archived_at.asc&limit=50000`);
       return (rows || []).map(fromArchiveRow);
     },
 
@@ -500,7 +495,6 @@ export function supabaseStorage({
         source_id: sourceId,
         target_id: l.id,
         strength: l.similarity,
-        link_type: l.type || 'similar',
         created_at: new Date().toISOString(),
       }));
       await request('POST', `/rest/v1/${linksTable}`, rows, {
