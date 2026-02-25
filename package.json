@@ -1,7 +1,7 @@
 {
   "name": "@jeremiaheth/neolata-mem",
-  "version": "0.5.3",
-  "description": "Graph-native memory engine for AI agents with Zettelkasten linking, biological decay, and conflict resolution",
+  "version": "0.8.1",
+  "description": "Trustworthy graph-native memory engine for AI agents - belief updates, provenance tracking, trust-gated supersession, and poisoning resistance",
   "type": "module",
   "main": "src/index.mjs",
   "exports": {
@@ -38,7 +38,12 @@
     "vector-search",
     "multi-agent",
     "decay",
-    "conflict-resolution"
+    "conflict-resolution",
+    "trust",
+    "provenance",
+    "contradiction-resolution",
+    "belief-update",
+    "poisoning-defense"
   ],
   "author": "Jeremiaheth",
   "license": "MIT",
