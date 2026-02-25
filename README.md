@@ -2,7 +2,7 @@
 
 **Graph-native memory engine for AI agents.** Zettelkasten-inspired linking, biological decay, conflict resolution.
 
-[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Elastic License 2.0](https://img.shields.io/badge/license-Elastic--2.0-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org)
 
 ---
@@ -68,7 +68,7 @@ embeddings: {
 
 ### 🔗 A-MEM Zettelkasten Linking
 
-Every memory automatically links to related memories — bidirectionally. When you store "Redis runs on port 6379", it finds existing memories about Redis, ports, or databases and creates links in both directions.
+Every memory automatically links to related memories - bidirectionally. When you store "Redis runs on port 6379", it finds existing memories about Redis, ports, or databases and creates links in both directions.
 
 ```javascript
 await mem.store('a', 'Redis runs on port 6379');
@@ -110,14 +110,14 @@ await mem.evolve('a', 'Server now runs on port 8080');
 // Old version archived with evolution history
 ```
 
-**Quarantine lane** — low-trust or structurally conflicting memories are quarantined instead of auto-superseding:
+**Quarantine lane** - low-trust or structurally conflicting memories are quarantined instead of auto-superseding:
 
 ```javascript
 // Store with claim metadata and provenance
 await mem.store('a', 'Server runs on port 443', {
   claim: { subject: 'server', predicate: 'port', value: '443' },
   provenance: { source: 'user_explicit', trust: 1.0 },
-  onConflict: 'quarantine',  // default — quarantine low-trust conflicts
+  onConflict: 'quarantine',  // default - quarantine low-trust conflicts
 });
 
 // Review quarantined memories
@@ -207,7 +207,7 @@ const mem = createMemory({
     dir: './my-data',     // Custom directory for JSON storage
   },
 
-  // Embeddings (optional — keyword search works without)
+  // Embeddings (optional - keyword search works without)
   embeddings: {
     type: 'openai',       // 'openai' (any compatible API) | 'noop' (keyword only)
     apiKey: '...',
@@ -216,7 +216,7 @@ const mem = createMemory({
     extraBody: {},        // Extra params (e.g. { input_type: 'passage' } for NIM)
   },
 
-  // Fact extraction (optional — enables ingest())
+  // Fact extraction (optional - enables ingest())
   extraction: {
     type: 'llm',          // 'llm' | 'passthrough'
     apiKey: '...',
@@ -224,7 +224,7 @@ const mem = createMemory({
     baseUrl: 'https://api.openai.com/v1',
   },
 
-  // LLM for conflict resolution (optional — enables evolve())
+  // LLM for conflict resolution (optional - enables evolve())
   llm: {
     type: 'openai',
     apiKey: '...',
@@ -323,7 +323,7 @@ Set `OPENAI_API_KEY` or `NVIDIA_API_KEY` for embedding support. See `npx @jeremi
 
 ### `createMemory(opts?) → MemoryGraph`
 
-Factory function. All options are optional — zero-config returns a working instance with JSON storage and keyword search.
+Factory function. All options are optional - zero-config returns a working instance with JSON storage and keyword search.
 
 ### Core Methods
 
@@ -496,7 +496,7 @@ neolata-mem includes several hardening measures:
 
 - **Input validation**: Agent names (alphanumeric, max 64 chars), memory text (max 10KB), bounded total memory count (default 50K)
 - **Prompt injection mitigation**: All user content is XML-fenced in LLM prompts with explicit instruction boundaries. LLM output is structurally validated (type checks, index bounds, category whitelists)
-- **SSRF protection**: All provider URLs validated via `validateBaseUrl()` — blocks cloud metadata endpoints, private IP ranges (configurable), non-HTTP protocols
+- **SSRF protection**: All provider URLs validated via `validateBaseUrl()` - blocks cloud metadata endpoints, private IP ranges (configurable), non-HTTP protocols
 - **Supabase hardening**: UUID validation on all query params (prevents PostgREST injection), error text sanitized (strips tokens/keys), safe upsert-based save (no data loss on crash), automatic 429 retry with backoff
 - **Atomic writes**: JSON storage uses write-to-temp + rename to prevent corruption from concurrent access
 - **Path traversal guards**: Storage directories and write-through paths validated with `resolve()` + prefix checks
@@ -504,12 +504,12 @@ neolata-mem includes several hardening measures:
 - **Retry bounds**: Embedding and Supabase API retries are capped at 3 with exponential backoff (no infinite loops)
 - **Error surfacing**: Failed conflict detection returns `{ error }` instead of silently proceeding
 
-**Trust model**: For JSON storage, neolata-mem trusts the filesystem — protect your data directory. For Supabase, use Row Level Security (RLS) policies. Embedding vectors can approximate original text via inversion attacks — treat them as sensitive.
+**Trust model**: For JSON storage, neolata-mem trusts the filesystem - protect your data directory. For Supabase, use Row Level Security (RLS) policies. Embedding vectors can approximate original text via inversion attacks - treat them as sensitive.
 
 ## Documentation
 
-📖 **[Full User Guide](docs/guide.md)** — configuration deep dive, embedding providers, storage backends, recipes, troubleshooting, architecture.
+📖 **[Full User Guide](docs/guide.md)** - configuration deep dive, embedding providers, storage backends, recipes, troubleshooting, architecture.
 
 ## License
 
-MIT — do whatever you want.
+[Elastic License 2.0](LICENSE) — free to use, modify, and distribute. You just can't offer it as a hosted/managed service.
