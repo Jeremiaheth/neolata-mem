@@ -29,6 +29,7 @@ metadata:
       - "Webhook URLs are an explicit exfiltration surface — only configure trusted endpoints"
       - "Test with storage.type='memory' first to evaluate without persisting any data"
       - "All env vars except OPENAI_API_KEY and OPENCLAW_GATEWAY_TOKEN are passed via config objects, not read from env directly"
+    license: Elastic-2.0
     homepage: https://github.com/Jeremiaheth/neolata-mem
     repository: https://github.com/Jeremiaheth/neolata-mem
 ---
