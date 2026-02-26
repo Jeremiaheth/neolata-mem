@@ -261,9 +261,11 @@ First-class Supabase backend with incremental operations and server-side vector 
 storage: {
   type: 'supabase',
   url: process.env.SUPABASE_URL,
-  key: process.env.SUPABASE_SERVICE_KEY,
+  key: process.env.SUPABASE_KEY,  // Prefer anon key + RLS; service key bypasses row-level security
 }
 ```
+
+> ⚠️ **Security:** Prefer a Supabase anon/public key with Row-Level Security (RLS) policies. A service key grants full database access and should only be used for admin operations, never in client-facing agents.
 
 **Setup:** Run `sql/schema.sql` in your Supabase Dashboard SQL Editor to create the required tables.
 
@@ -1128,7 +1130,7 @@ const mem = createMemory({
   storage: {
     type: 'supabase',
     url: process.env.SUPABASE_URL,
-    key: process.env.SUPABASE_SERVICE_KEY,
+    key: process.env.SUPABASE_KEY,  // Prefer anon key + RLS
   },
   embeddings: {
     type: 'openai',
@@ -1150,6 +1152,8 @@ const results = await mem.search('kuro', 'dark mode');
 ```
 
 ### Write-through to webhooks
+
+> ⚠️ **Security:** Webhook URLs are an explicit data exfiltration surface. Each store/decay event sends memory content to the configured endpoint. Only configure URLs you trust and control.
 
 ```javascript
 import { createMemory, webhookWritethrough } from '@jeremiaheth/neolata-mem';

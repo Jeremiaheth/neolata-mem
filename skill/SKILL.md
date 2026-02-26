@@ -8,10 +8,27 @@ metadata:
       bins:
         - node
     optionalEnv:
-      - OPENAI_API_KEY        # For OpenAI embeddings/extraction
-      - NVIDIA_API_KEY        # For NVIDIA NIM embeddings
-      - SUPABASE_URL          # For Supabase storage backend
-      - SUPABASE_KEY          # Supabase anon key (preferred) or service key
+      - OPENAI_API_KEY           # For OpenAI embeddings/extraction (read by code)
+      - OPENCLAW_GATEWAY_TOKEN   # For OpenClaw LLM gateway routing (read by code)
+      - NVIDIA_API_KEY           # For NVIDIA NIM embeddings (passed via config)
+      - AZURE_API_KEY            # For Azure OpenAI embeddings (passed via config)
+      - SUPABASE_URL             # For Supabase storage backend (passed via config)
+      - SUPABASE_KEY             # Supabase anon key — prefer over service key (passed via config)
+    dataFlow:
+      local:
+        - "Default: JSON files in ./neolata-mem-data/ (configurable dir)"
+        - "In-memory mode: storage.type='memory' — nothing written to disk"
+      remote:
+        - "Supabase: if storage.type='supabase', memories are stored/read from your Supabase project"
+        - "Embeddings: if configured, text is sent to OpenAI/NVIDIA/Azure/Ollama for vectorization"
+        - "LLM: if configured, text sent to OpenAI/OpenClaw/Ollama for extraction/compression/evolution"
+        - "Webhooks: if webhookWritethrough is enabled, each store event POSTs to the configured URL"
+      note: "No data leaves the host unless you explicitly configure a remote backend, embedding provider, LLM, or webhook. Default config is fully local (JSON storage + no embeddings)."
+    securityNotes:
+      - "Prefer Supabase anon key + RLS over service key — service key bypasses row-level security"
+      - "Webhook URLs are an explicit exfiltration surface — only configure trusted endpoints"
+      - "Test with storage.type='memory' first to evaluate without persisting any data"
+      - "All env vars except OPENAI_API_KEY and OPENCLAW_GATEWAY_TOKEN are passed via config objects, not read from env directly"
     homepage: https://github.com/Jeremiaheth/neolata-mem
     repository: https://github.com/Jeremiaheth/neolata-mem
 ---
@@ -56,6 +73,29 @@ No Docker. No Python. No Neo4j. No cloud API required.
 > npm pack @jeremiaheth/neolata-mem --dry-run
 > ```
 > Source is fully auditable at [github.com/Jeremiaheth/neolata-mem](https://github.com/Jeremiaheth/neolata-mem).
+
+## Security & Data Flow
+
+**Default configuration is fully local** — JSON files on disk, no network calls, no embeddings, no external services.
+
+Data only leaves the host if you **explicitly configure** one of these:
+
+| Feature | What leaves | Where it goes | How to avoid |
+|---------|------------|---------------|-------------|
+| Embeddings (OpenAI/NVIDIA/Azure) | Memory text | Embedding API endpoint | Use `noop` embeddings or Ollama (local) |
+| LLM (OpenAI/OpenClaw/Ollama) | Memory text for extraction/compression | LLM API endpoint | Don't configure `llm` option, or use Ollama |
+| Supabase storage | All memory data | Your Supabase project | Use `json` or `memory` storage (default) |
+| Webhook writethrough | Store/decay event payloads | Your webhook URL | Don't configure `webhookWritethrough` |
+
+**Key security properties:**
+- Only 2 env vars are read directly by code: `OPENAI_API_KEY` and `OPENCLAW_GATEWAY_TOKEN`. All others (Supabase, NVIDIA, Azure) are passed via explicit config objects.
+- All provider URLs are validated against SSRF (private IPs blocked, cloud metadata blocked).
+- Supabase: prefer anon key + RLS over service key. Service key bypasses row-level security.
+- JSON storage uses atomic writes (temp file + rename) to prevent corruption.
+- All user content sent to LLMs is XML-fenced with injection guards.
+- Test safely with `storage: { type: 'memory' }` — nothing touches disk or network.
+
+See `docs/guide.md § Security` for the full security model.
 
 ## Quick Start (Zero Config)
 
