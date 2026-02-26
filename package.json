@@ -1,6 +1,6 @@
 {
   "name": "@jeremiaheth/neolata-mem",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "description": "Trustworthy graph-native memory engine for AI agents - belief updates, provenance tracking, trust-gated supersession, and poisoning resistance",
   "type": "module",
   "main": "src/index.mjs",
