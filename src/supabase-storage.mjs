@@ -490,13 +490,18 @@ export function supabaseStorage({
     async upsertLinks(sourceId, links) {
       assertUUID(sourceId, 'upsertLinks: sourceId');
       if (!links.length) return;
-      const rows = links.map(l => ({
-        id: randomUUID(),
-        source_id: sourceId,
-        target_id: l.id,
-        strength: l.similarity,
-        created_at: new Date().toISOString(),
-      }));
+      // Normalize to canonical direction (sorted pair) to prevent bidirectional dupes.
+      // loadLinks() already treats each row as bidirectional, so one row per pair suffices.
+      const rows = links.map(l => {
+        const [a, b] = [sourceId, l.id].sort();
+        return {
+          id: randomUUID(),
+          source_id: a,
+          target_id: b,
+          strength: l.similarity,
+          created_at: new Date().toISOString(),
+        };
+      });
       await request('POST', `/rest/v1/${linksTable}`, rows, {
         'Prefer': 'return=minimal,resolution=merge-duplicates',
       });

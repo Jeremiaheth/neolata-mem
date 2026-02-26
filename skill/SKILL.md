@@ -1,6 +1,6 @@
 ---
 name: neolata-mem
-version: 0.8.2
+version: 0.8.3
 description: Graph-native memory engine for AI agents — hybrid vector+keyword search, biological decay, Zettelkasten linking, trust-gated conflict resolution, explainability, episodes, compression & consolidation. Zero dependencies. npm install and go.
 metadata:
   openclaw:

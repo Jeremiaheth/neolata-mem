@@ -42,9 +42,9 @@ describe('markdownWritethrough', () => {
     markdownWritethrough(graph, { dir });
 
     await graph.store('a1', 'Fact one');
-    await new Promise(r => setTimeout(r, 50));
+    await new Promise(r => setTimeout(r, 200));
     await graph.store('a1', 'Fact two');
-    await new Promise(r => setTimeout(r, 50));
+    await new Promise(r => setTimeout(r, 200));
 
     const date = new Date().toISOString().slice(0, 10);
     const content = await readFile(join(dir, `memories-${date}.md`), 'utf8');
