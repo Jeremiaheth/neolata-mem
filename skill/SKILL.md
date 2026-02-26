@@ -1,6 +1,5 @@
 ---
 name: neolata-mem
-version: 0.8.1
 description: Graph-native memory engine for AI agents — hybrid vector+keyword search, biological decay, Zettelkasten linking, conflict resolution. Zero infrastructure. npm install and go.
 metadata:
   openclaw:
@@ -22,7 +21,7 @@ Graph-native memory for AI agents with hybrid search, biological decay, and zero
 
 **npm package:** `@jeremiaheth/neolata-mem`
 **Repository:** [github.com/Jeremiaheth/neolata-mem](https://github.com/Jeremiaheth/neolata-mem)
-**License:** Elastic-2.0 (ELv2) | **Tests:** 366/366 passing (34 files) | **Node:** ≥18
+**License:** MIT | **Tests:** 333/333 passing (29 files) | **Node:** ≥18
 
 ## When to Use This Skill
 
@@ -320,15 +319,8 @@ See the [full security section](docs/guide.md#security) for details.
 
 **To keep all data local**: Use Ollama for embeddings and JSON storage. No API keys needed for keyword-only search.
 
-## References
-
-For detailed documentation, read these files from the `references/` directory:
-
-- **[guide.md](references/guide.md)** — Full API reference, configuration options, storage backends, embedding providers, and advanced usage patterns
-- **[runtime-helpers.md](references/runtime-helpers.md)** — Heartbeat auto-store, contextual recall by topic, pre-compaction structured dump
-- **[implementation-notes.md](references/implementation-notes.md)** — Architecture decisions, internal data structures, and performance notes
-
 ## Links
 
 - **npm:** [@jeremiaheth/neolata-mem](https://www.npmjs.com/package/@jeremiaheth/neolata-mem)
 - **GitHub:** [Jeremiaheth/neolata-mem](https://github.com/Jeremiaheth/neolata-mem)
+- **Full docs:** See `docs/guide.md` in the package

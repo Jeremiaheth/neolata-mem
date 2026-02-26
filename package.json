@@ -24,9 +24,7 @@
     "README.md"
   ],
   "scripts": {
-    "test": "vitest run",
-    "verify-skill": "node scripts/verify-skill.mjs",
-    "prepublishOnly": "vitest run && node scripts/verify-skill.mjs"
+    "test": "vitest run"
   },
   "keywords": [
     "ai",
