@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { MemoryGraph, tokenize } from '../src/graph.mjs';
 
 // ── Helpers ─────────────────────────────────────────────
@@ -25,7 +26,7 @@ function memStorage() {
     save: async (d) => { data = d; },
     loadArchive: async () => [],
     saveArchive: async () => {},
-    genId: () => crypto.randomUUID(),
+    genId: () => randomUUID(),
   };
 }
 
