@@ -803,9 +803,9 @@ export class MemoryGraph {
     } : null;
 
     // Use embedQuery for asymmetric models (NIM), fall back to embed
+    // Skip embedding for empty queries (recent-only mode)
     const embedFn = this.embeddings.embedQuery || this.embeddings.embed;
-    const embedResult = await embedFn.call(this.embeddings, query);
-    const queryEmb = embedResult[0];
+    const queryEmb = query ? (await embedFn.call(this.embeddings, query))[0] : null;
 
     let candidates = this.memories;
     if (agent) candidates = candidates.filter(m => m.agent === agent);
@@ -1090,7 +1090,19 @@ export class MemoryGraph {
     };
 
     let results;
-    if (!queryEmb) {
+    if (!query && !queryEmb) {
+      // Empty query = recent mode: return most recent candidates
+      results = [...candidates]
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+        .slice(0, limit)
+        .map(m => {
+          const out = { ...m, score: 0, embedding: undefined };
+          if (explainEnabled) {
+            out.__retrieved = { vectorSimilarity: null, keywordScore: 0, keywordHits: 0 };
+          }
+          return out;
+        });
+    } else if (!queryEmb) {
       results = keywordFallback();
     } else {
       // Candidate narrowing: if >500 memories with embeddings, use token index to pre-filter
@@ -3135,29 +3147,32 @@ Respond with ONLY the summary text.`;
     quarantineMaxAgeDays = 30,
     pruneAge = 90,
     method = 'extractive',
+    agent,
   } = {}) {
     await this.init();
     const start = Date.now();
+    // Scope to agent if provided
+    const scope = agent ? this.memories.filter(m => m.agent === agent) : this.memories;
     const report = {
       deduplicated: 0,
       contradictions: { resolved: 0, pending: 0 },
       corroborated: 0,
       compressed: { clusters: 0, sourceMemories: 0 },
       pruned: { superseded: 0, decayed: 0, disputed: 0, quarantined: 0 },
-      before: { total: this.memories.length, active: this.memories.filter(m => m.status !== 'superseded').length },
+      before: { total: scope.length, active: scope.filter(m => m.status !== 'superseded').length },
       after: { total: 0, active: 0 },
       duration_ms: 0,
     };
 
     // Phase 1: Dedup - find near-identical active memories
     const deduped = new Set();
-    for (let i = 0; i < this.memories.length; i++) {
-      const a = this.memories[i];
+    for (let i = 0; i < scope.length; i++) {
+      const a = scope[i];
       if (deduped.has(a.id) || a.status === 'superseded') continue;
       if (!a.embedding) continue;
 
-      for (let j = i + 1; j < this.memories.length; j++) {
-        const b = this.memories[j];
+      for (let j = i + 1; j < scope.length; j++) {
+        const b = scope[j];
         if (deduped.has(b.id) || b.status === 'superseded') continue;
         if (!b.embedding) continue;
 
@@ -3201,7 +3216,7 @@ Respond with ONLY the summary text.`;
 
     // Phase 2: Structural contradiction check
     if (!dryRun) {
-      const claimMems = this.memories.filter(m => m.claim && m.status === 'active');
+      const claimMems = scope.filter(m => m.claim && m.status === 'active');
       const checked = new Set();
       for (const mem of claimMems) {
         const key = `${mem.claim.subject}::${mem.claim.predicate}`;
@@ -3228,7 +3243,7 @@ Respond with ONLY the summary text.`;
 
     // Phase 3: Corroboration - boost confidence for memories confirmed by multiple sources
     if (!dryRun) {
-      const active = this.memories.filter(m => m.status === 'active' && m.embedding);
+      const active = scope.filter(m => m.status === 'active' && m.embedding);
       for (let i = 0; i < active.length; i++) {
         for (let j = i + 1; j < active.length; j++) {
           const sim = cosineSimilarity(active[i].embedding, active[j].embedding);
@@ -3254,21 +3269,33 @@ Respond with ONLY the summary text.`;
     if (!dryRun) {
       const cutoff = Date.now() - (compressAge * 24 * 60 * 60 * 1000);
       const allClusters = await this.clusters(3);
+      const scopeIds = agent ? new Set(scope.map(m => m.id)) : null;
       const staleClusters = allClusters.filter(c => {
+        // If agent-scoped, only include clusters whose members are in scope
+        if (scopeIds) {
+          if (!c.memories.some(m => scopeIds.has(m.id))) return false;
+        }
         return c.memories.every(m => {
           const mem = this._byId(m.id);
           return mem && new Date(mem.updated_at || mem.created_at).getTime() < cutoff;
         });
       }).filter(c => !c.memories.some(m => this._byId(m.id)?.category === 'digest'));
 
+      // Auto-chunk: split large clusters into sub-groups to stay under text limit
+      const maxChunkSize = 15;
       for (const cluster of staleClusters.slice(0, 5)) {
-        try {
-          const ids = cluster.memories.map(m => m.id);
-          await this.compress(ids, { method, archiveOriginals: false });
-          report.compressed.clusters++;
-          report.compressed.sourceMemories += ids.length;
-        } catch {
-          continue;
+        const allIds = cluster.memories.map(m => m.id);
+        // Split into chunks
+        for (let ci = 0; ci < allIds.length; ci += maxChunkSize) {
+          const chunkIds = allIds.slice(ci, ci + maxChunkSize);
+          if (chunkIds.length < 2) continue;
+          try {
+            await this.compress(chunkIds, { method, archiveOriginals: false });
+            report.compressed.clusters++;
+            report.compressed.sourceMemories += chunkIds.length;
+          } catch {
+            continue;
+          }
         }
       }
     }
@@ -3278,7 +3305,7 @@ Respond with ONLY the summary text.`;
       const toPrune = [];
       const now = Date.now();
 
-      for (const mem of this.memories) {
+      for (const mem of scope) {
         // Prune old superseded memories
         if (pruneSuperseded && mem.status === 'superseded') {
           const age = (now - new Date(mem.updated_at || mem.created_at).getTime()) / (1000 * 60 * 60 * 24);
@@ -3327,17 +3354,23 @@ Respond with ONLY the summary text.`;
       }
     }
 
-    // Persist remaining changes
+    // Persist remaining changes — only upsert scoped memories to avoid redundant writes
     if (!dryRun) {
+      const toUpsert = agent ? scope : this.memories;
       if (this.storage.incremental) {
-        for (const mem of this.memories) await this.storage.upsert(mem);
+        // Batch upserts in groups of 20 to avoid connection exhaustion
+        for (let i = 0; i < toUpsert.length; i += 20) {
+          const batch = toUpsert.slice(i, i + 20);
+          await Promise.all(batch.map(mem => this.storage.upsert(mem)));
+        }
       } else {
         await this.save();
       }
     }
 
-    report.after.total = this.memories.length;
-    report.after.active = this.memories.filter(m => m.status !== 'superseded').length;
+    const finalScope = agent ? this.memories.filter(m => m.agent === agent) : this.memories;
+    report.after.total = finalScope.length;
+    report.after.active = finalScope.filter(m => m.status !== 'superseded').length;
     report.duration_ms = Date.now() - start;
 
     this.emit('consolidate', report);

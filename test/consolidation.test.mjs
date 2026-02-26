@@ -136,6 +136,25 @@ describe('Consolidation', () => {
     expect(graph._byId('mem_decay')).toBeUndefined();
   });
 
+  it('consolidate() scoped to agent only affects that agent', async () => {
+    const graph = createTestGraph();
+    seed(graph, [
+      memory({ id: 'mem_a1', text: 'agent a dup 1', embedding: [1, 0, 0], trust: 0.9 }),
+      memory({ id: 'mem_a2', text: 'agent a dup 2', embedding: [0.99, 0.01, 0], trust: 0.2 }),
+      { ...memory({ id: 'mem_b1', text: 'agent b fact', embedding: [1, 0, 0], trust: 0.5 }), agent: 'b' },
+      { ...memory({ id: 'mem_b2', text: 'agent b fact copy', embedding: [0.99, 0.01, 0], trust: 0.3 }), agent: 'b' },
+    ]);
+
+    const report = await graph.consolidate({ agent: 'a', dedupThreshold: 0.95, compressAge: 99999 });
+    expect(report.deduplicated).toBeGreaterThan(0);
+    // Agent a's duplicate should be superseded
+    expect(graph._byId('mem_a2').status).toBe('superseded');
+    // Agent b's duplicate should be untouched
+    expect(graph._byId('mem_b2').status).toBe('active');
+    // Report counts only agent a's memories
+    expect(report.before.total).toBe(2);
+  });
+
   it('dryRun: true returns report without mutations', async () => {
     const graph = createTestGraph();
     seed(graph, [
