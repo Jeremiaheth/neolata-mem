@@ -34,7 +34,11 @@
 ## Installation
 
 ```bash
+# From npm
 npm install @jeremiaheth/neolata-mem
+
+# From GitHub Packages
+npm install @jeremiaheth/neolata-mem --registry=https://npm.pkg.github.com
 ```
 
 No Python. No Docker. No database servers. Just Node.js ≥18.

@@ -2,8 +2,11 @@
 
 **Graph-native memory engine for AI agents.** Zettelkasten-inspired linking, biological decay, conflict resolution.
 
+[![npm](https://img.shields.io/npm/v/@jeremiaheth/neolata-mem.svg)](https://www.npmjs.com/package/@jeremiaheth/neolata-mem)
+[![GitHub Package](https://img.shields.io/badge/GitHub%20Packages-v0.8.4-blue.svg)](https://github.com/Jeremiaheth/neolata-mem/packages)
 [![Elastic License 2.0](https://img.shields.io/badge/license-Elastic--2.0-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org)
+[![Tests](https://img.shields.io/badge/tests-428%20across%2040%20files-brightgreen.svg)](https://github.com/Jeremiaheth/neolata-mem)
 
 ---
 

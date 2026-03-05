@@ -1,4 +1,4 @@
-# Practical Implementation Notes — neolata-mem v0.8.1+
+# Practical Implementation Notes — neolata-mem v0.8.4+
 
 > Architecture & semantics reference for contributors. Code-aligned to actual method signatures in `src/graph.mjs`.
 
@@ -251,7 +251,7 @@ Enabled on all tables. See `sql/migration-v0.8.sql` for policy suggestions.
 
 ## 10. Testing
 
-333 tests across 29 files. Key test areas:
+428 tests across 40 files. Key test areas:
 - `test/claims.test.mjs` — conflict semantics: exclusivity, validity overlap, scope rules, dedupe/corroboration, backwards compat
 - `test/graph.test.mjs` — core store/search/context/decay/consolidate
 - `test/supabase-storage.test.mjs` — storage layer
