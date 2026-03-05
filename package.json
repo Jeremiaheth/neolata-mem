@@ -54,6 +54,9 @@
     "type": "git",
     "url": "https://github.com/Jeremiaheth/neolata-mem"
   },
+  "publishConfig": {
+    "@jeremiaheth:registry": "https://npm.pkg.github.com"
+  },
   "engines": {
     "node": ">=18.0.0"
   },

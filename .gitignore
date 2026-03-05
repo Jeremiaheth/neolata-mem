@@ -13,3 +13,4 @@ supabase/.env
 supabase/config.toml
 
 supabase/
+.npmrc 
