@@ -560,3 +560,18 @@ neolata-mem includes several hardening measures:
 ## License
 
 [Elastic License 2.0](LICENSE) — free to use, modify, and distribute. You just can't offer it as a hosted/managed service.
+
+## Product Page Deployment (GitHub Pages)
+
+This repository includes a standalone product page in `site/` and a Pages deployment workflow at `.github/workflows/deploy-pages.yml`.
+
+For custom domain `neolata.dpdns.org`:
+
+1. Keep `site/CNAME` set to `neolata.dpdns.org`.
+2. In GitHub repo settings, open **Pages** and ensure source is **GitHub Actions**.
+3. In DigitalPlat Domains DNS, point your domain to GitHub Pages:
+   - `A` records for apex/root if needed: `185.199.108.153`, `185.199.109.153`, `185.199.110.153`, `185.199.111.153`
+   - `CNAME` for `www` (optional) to `<your-github-username>.github.io`
+4. Wait for DNS propagation, then verify HTTPS is enabled in GitHub Pages settings.
+
+The page auto-deploys on pushes that touch `site/**`.

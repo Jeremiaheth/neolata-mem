@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>neolata-mem | Graph-native memory engine for AI agents</title>
+    <meta
+      name="description"
+      content="neolata-mem is a trustworthy graph-native memory engine for AI agents with linking, decay, trust gating, and explainability."
+    />
+    <meta property="og:title" content="neolata-mem" />
+    <meta
+      property="og:description"
+      content="Graph-native memory engine for AI agents. Zettelkasten-inspired linking, trust-aware updates, and explainability."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://neolata.dpdns.org" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="hero">
+      <nav class="nav">
+        <div class="brand">neolata-mem</div>
+        <a href="https://github.com/Jeremiaheth/neolata-mem" target="_blank" rel="noreferrer">GitHub</a>
+      </nav>
+      <div class="hero-content">
+        <p class="kicker">Memory infrastructure for autonomous systems</p>
+        <h1>Give your AI agents durable, trustworthy memory.</h1>
+        <p class="lead">
+          A production-ready, graph-native memory engine with semantic + keyword retrieval, trust-gated belief
+          updates, and explainability built in.
+        </p>
+        <div class="cta-row">
+          <a class="button primary" href="https://github.com/Jeremiaheth/neolata-mem" target="_blank" rel="noreferrer">Get started</a>
+          <a class="button secondary" href="https://www.npmjs.com/package/@jeremiaheth/neolata-mem" target="_blank" rel="noreferrer">View npm package</a>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="features">
+        <article>
+          <h2>Graph-native by default</h2>
+          <p>
+            Every memory can auto-link to related memories, enabling multi-hop traversal, cluster discovery, and
+            stronger context generation for RAG workflows.
+          </p>
+        </article>
+        <article>
+          <h2>Trust-aware memory evolution</h2>
+          <p>
+            Contradictions are resolved with provenance, confidence, and trust gating. Low-trust conflicts can be
+            quarantined for review instead of silently replacing facts.
+          </p>
+        </article>
+        <article>
+          <h2>Explainability and control</h2>
+          <p>
+            Inspect why a memory was retrieved, filtered, superseded, or quarantined. Explanations make debugging
+            and governance straightforward.
+          </p>
+        </article>
+      </section>
+
+      <section class="snippet">
+        <h2>Install in one line</h2>
+        <pre><code>npm install @jeremiaheth/neolata-mem</code></pre>
+      </section>
+
+      <section class="highlights">
+        <h2>Why teams choose neolata-mem</h2>
+        <ul>
+          <li>Zero-config local JSON storage for rapid prototyping.</li>
+          <li>OpenAI-compatible embeddings support (OpenAI, NVIDIA NIM, Ollama, and more).</li>
+          <li>Built-in graph APIs: path, traversal, clusters, orphans, and health.</li>
+          <li>Predicate schema registry for conflict and deduplication policies.</li>
+        </ul>
+      </section>
+    </main>
+
+    <footer>
+      <p>© <span id="year"></span> neolata-mem · Built for resilient AI memory systems.</p>
+    </footer>
+
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
