@@ -9,9 +9,14 @@
     "./graph": "./src/graph.mjs",
     "./embeddings": "./src/embeddings.mjs",
     "./storage": "./src/storage.mjs",
+    "./wal": "./src/wal.mjs",
+    "./wal-replay": "./src/wal-replay.mjs",
+    "./wal-snapshot": "./src/wal-snapshot.mjs",
+    "./wal-equivalence": "./src/wal-equivalence.mjs",
     "./supabase-storage": "./src/supabase-storage.mjs",
     "./extraction": "./src/extraction.mjs",
-    "./llm": "./src/llm.mjs"
+    "./llm": "./src/llm.mjs",
+    "./wal-recovery": "./src/wal-recovery.mjs"
   },
   "bin": {
     "neolata-mem": "./cli/index.mjs"
@@ -25,8 +30,10 @@
   ],
   "scripts": {
     "test": "vitest run",
+    "validate:wal": "node --preserve-symlinks --preserve-symlinks-main scripts/validate-wal.mjs",
     "verify-skill": "node scripts/verify-skill.mjs",
-    "prepublishOnly": "vitest run && node scripts/verify-skill.mjs"
+    "prepublishOnly": "vitest run && node scripts/verify-skill.mjs",
+    "validate:recovery": "node --preserve-symlinks --preserve-symlinks-main scripts/validate-recovery.mjs"
   },
   "keywords": [
     "ai",

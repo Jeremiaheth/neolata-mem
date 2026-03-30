@@ -15,6 +15,7 @@
  */
 
 import { cosineSimilarity } from './embeddings.mjs';
+import { createWalMutationEvent } from './wal.mjs';
 
 /** @typedef {{ id: string, agent: string, memory: string, category: string, importance: number, tags: string[], embedding: number[]|null, links: {id: string, similarity: number, type?: string}[], created_at: string, updated_at: string, evolution?: object[], accessCount?: number }} Memory */
 
@@ -207,11 +208,12 @@ export class MemoryGraph {
    * @param {number} [opts.config.archiveThreshold=0.15] - Strength below this → archive
    * @param {number} [opts.config.deleteThreshold=0.05] - Strength below this → delete
    */
-  constructor({ storage, embeddings, extraction, llm, config = {} }) {
+  constructor({ storage, embeddings, extraction, llm, wal = null, config = {} }) {
     this.storage = storage;
     this.embeddings = embeddings;
     this.extraction = extraction || null;
     this.llm = llm || null;
+    this.wal = wal;
     this.memories = [];
     this.loaded = false;
     this._listeners = {};
@@ -318,6 +320,19 @@ export class MemoryGraph {
     for (const fn of (this._listeners[event] || [])) {
       try { fn(data); } catch { /* listener errors don't break the engine */ }
     }
+  }
+
+  async _appendWal(op, { memoryId, actor = null, data = {} } = {}) {
+    if (!this.wal) return;
+    if (typeof this.wal.appendMutation === 'function') {
+      await this.wal.appendMutation({ op, memoryId, actor, data });
+      return;
+    }
+    if (typeof this.wal.append === 'function') {
+      await this.wal.append(createWalMutationEvent({ op, memoryId, actor, data }));
+      return;
+    }
+    throw new Error('wal backend must implement appendMutation() or append()');
   }
 
   /** Load memories from storage (lazy, called once). */
@@ -698,6 +713,16 @@ export class MemoryGraph {
       await this.save();
     }
     if (pendingConflictsChanged) await this._savePendingConflicts();
+    await this._appendWal('store', {
+      memoryId: id,
+      actor: agent,
+      data: {
+        category,
+        importance,
+        status: newMem.status,
+        links: topLinks.length,
+      },
+    });
 
     // Emit store event
     this.emit('store', { id, agent, content: text, category, importance, links: topLinks.length });
@@ -1829,6 +1854,16 @@ export class MemoryGraph {
     } else {
       await this.save();
     }
+    await this._appendWal('reinforce', {
+      memoryId: mem.id,
+      actor: mem.agent || null,
+      data: {
+        boost,
+        importance: mem.importance,
+        accessCount: mem.accessCount,
+        reinforcements: mem.reinforcements,
+      },
+    });
 
     const { strength } = this.calcStrength(mem);
     return {
@@ -2029,6 +2064,16 @@ Respond ONLY with a JSON object:
 
     if (this.storage.incremental) await this.storage.upsert(mem);
     else await this.save();
+    await this._appendWal('dispute', {
+      memoryId,
+      actor: mem.agent || null,
+      data: {
+        disputes: mem.disputes,
+        trust: +mem.provenance.trust.toFixed(4),
+        status: mem.status,
+        reason: reason || null,
+      },
+    });
 
     this.emit('dispute', { id: memoryId, disputes: mem.disputes, trust: mem.provenance.trust, status: mem.status, reason });
     return {
@@ -2486,6 +2531,15 @@ Respond ONLY with a JSON object:
     mem.updated_at = new Date().toISOString();
     if (this.storage.incremental) await this.storage.upsert(mem);
     else await this.save();
+    await this._appendWal('quarantine', {
+      memoryId: mem.id,
+      actor: mem.agent || null,
+      data: {
+        reason,
+        details: details || null,
+        status: mem.status,
+      },
+    });
     return { id: mem.id, status: mem.status, quarantine: mem.quarantine };
   }
 
