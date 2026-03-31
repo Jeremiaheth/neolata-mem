@@ -1,6 +1,6 @@
 ---
 name: neolata-mem
-version: 0.8.4
+version: 0.8.6
 description: Graph-native memory engine for AI agents — hybrid vector+keyword search, biological decay, Zettelkasten linking, trust-gated conflict resolution, explainability, episodes, compression & consolidation. Zero dependencies. npm install and go.
 metadata:
   openclaw:
@@ -40,7 +40,7 @@ Graph-native memory for AI agents with hybrid search, biological decay, and zero
 
 **npm package:** `@jeremiaheth/neolata-mem`
 **Repository:** [github.com/Jeremiaheth/neolata-mem](https://github.com/Jeremiaheth/neolata-mem)
-**License:** Elastic-2.0 | **Tests:** 367/367 passing (34 files) | **Node:** ≥18
+**License:** Elastic-2.0 | **Tests:** 381/381 passing (39 files) | **Node:** ≥18
 
 ## When to Use This Skill
 

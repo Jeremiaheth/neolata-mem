@@ -523,19 +523,56 @@ Decay Cycle:
 |---------|------------|------|-------|-----|
 | Zettelkasten linking | ✅ | ❌ | ❌ | ❌ |
 | Biological decay | ✅ | ❌ | ❌ | ❌ |
-| Graph traversal | ✅ | ❌ | ❌ | ✅ |
-| Multi-agent native | ✅ | ❌ | ❌ | ❌ |
-| Conflict resolution | ✅ | ✅ | ❌ | ❌ |
+| Graph traversal | ✅ | ❌ | ❌ | ✅ ¹ |
+| Multi-agent native | ✅ | ⚠️ ² | ⚠️ ³ | ❌ |
+| Conflict resolution | ✅ | ✅ | ❌ | ⚠️ ⁴ |
 | Quarantine lane | ✅ | ❌ | ❌ | ❌ |
-| Predicate schemas | ✅ | ❌ | ❌ | ❌ |
+| Predicate schemas | ✅ | ❌ | ❌ | ⚠️ ⁵ |
 | Runtime helpers (heartbeat/recall/dump) | ✅ | ❌ | ❌ | ❌ |
 | Explainability API | ✅ | ❌ | ❌ | ❌ |
-| Episodes & compression | ✅ | ❌ | ❌ | ❌ |
+| Episodes & compression | ✅ | ❌ | ❌ | ⚠️ ⁶ |
 | Labeled clusters | ✅ | ❌ | ❌ | ❌ |
 | Works offline | ✅ | ✅ | ✅ | ❌ |
-| No Python needed | ✅ | ❌ | ❌ | ❌ |
+| No Python needed | ✅ | ❌ ⁷ | ❌ | ❌ |
 | Zero-config start | ✅ | ❌ | ❌ | ❌ |
 | LLM optional | ✅ | ❌ | ❌ | ❌ |
+
+<details>
+<summary><b>Comparison notes</b> (click to expand)</summary>
+
+1. **Zep graph traversal** — Zep uses a temporal knowledge graph with entity/relation extraction. Different architecture from neolata-mem's Zettelkasten-style memory-to-memory links, but supports graph queries.
+2. **Mem0 multi-agent** — Mem0 supports User, Session, and Agent memory levels. Agent-scoped storage exists, but it's designed around user personalization rather than independent agent collaboration.
+3. **Letta multi-agent** — Letta supports shared memory blocks between agents and has a multi-agent orchestration layer. Not the same as neolata-mem's native agent-scoped store/search.
+4. **Zep conflict resolution** — Zep tracks temporal validity of facts (marking outdated facts as invalid when new info arrives). This is implicit conflict handling, not explicit quarantine/review like neolata-mem.
+5. **Zep predicate schemas** — Zep supports custom graph ontologies via Pydantic/Zod for domain-specific entity types. Different from neolata-mem's per-predicate conflict/dedup/normalization rules.
+6. **Zep episodes** — Zep structures interactions into episodic sequences with temporal awareness. neolata-mem episodes are explicitly named groups with time-window capture, compression, and search.
+7. **Mem0 npm package** — Mem0 offers an npm SDK (`mem0ai`), but the core engine and self-hosted deployment require Python.
+
+*Last updated: February 2026. Comparison based on publicly available documentation.*
+
+</details>
+
+## Roadmap
+
+### v0.9 — Production Hardening (Q1 2026)
+- [ ] **Supabase storage adapter** — first-class `storage: { type: 'supabase' }` config (currently requires custom wiring)
+- [ ] **Write-ahead log** — crash recovery for JSON storage beyond atomic writes
+- [ ] **Streaming search** — async iterator for large result sets
+- [ ] **Memory import/export** — portable JSON/JSONL format for backup and migration
+- [ ] **Benchmarks** — LOCOMO and LongMemEval comparison against Mem0, Zep, and raw vector stores
+
+### v1.0 — Stable API (Q2 2026)
+- [ ] **API stabilization** — semantic versioning contract, deprecation policy
+- [ ] **Plugin system** — bring-your-own storage/embeddings/LLM via a documented interface (beyond current provider pattern)
+- [ ] **Web dashboard** — visual graph explorer, memory inspector, health monitor
+- [ ] **Multi-backend sync** — replicate between JSON ↔ Supabase ↔ custom backends
+- [ ] **Access control** — per-agent read/write permissions for shared deployments
+
+### Future
+- [ ] **Real-time subscriptions** — watch for memory changes (useful for multi-agent coordination)
+- [ ] **Temporal queries** — "what did agent X know about Y on date Z?"
+- [ ] **Federation** — cross-instance memory sharing with trust boundaries
+- [ ] **Browser SDK** — lightweight client for web apps (IndexedDB storage)
 
 ## Security
 

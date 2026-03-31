@@ -1,6 +1,6 @@
 {
   "name": "@jeremiaheth/neolata-mem",
-  "version": "0.8.5",
+  "version": "0.8.6",
   "description": "Trustworthy graph-native memory engine for AI agents - belief updates, provenance tracking, trust-gated supersession, and poisoning resistance",
   "type": "module",
   "main": "src/index.mjs",
@@ -9,9 +9,14 @@
     "./graph": "./src/graph.mjs",
     "./embeddings": "./src/embeddings.mjs",
     "./storage": "./src/storage.mjs",
+    "./wal": "./src/wal.mjs",
+    "./wal-replay": "./src/wal-replay.mjs",
+    "./wal-snapshot": "./src/wal-snapshot.mjs",
+    "./wal-equivalence": "./src/wal-equivalence.mjs",
     "./supabase-storage": "./src/supabase-storage.mjs",
     "./extraction": "./src/extraction.mjs",
-    "./llm": "./src/llm.mjs"
+    "./llm": "./src/llm.mjs",
+    "./wal-recovery": "./src/wal-recovery.mjs"
   },
   "bin": {
     "neolata-mem": "./cli/index.mjs"
@@ -19,14 +24,18 @@
   "files": [
     "src/",
     "cli/",
-    "docs/*.md",
+    "docs/guide.md",
+    "docs/implementation-notes.md",
+    "docs/runtime-helpers.md",
     "LICENSE",
     "README.md"
   ],
   "scripts": {
     "test": "vitest run",
+    "validate:wal": "node --preserve-symlinks --preserve-symlinks-main scripts/validate-wal.mjs",
     "verify-skill": "node scripts/verify-skill.mjs",
-    "prepublishOnly": "vitest run && node scripts/verify-skill.mjs"
+    "prepublishOnly": "vitest run && node scripts/verify-skill.mjs",
+    "validate:recovery": "node --preserve-symlinks --preserve-symlinks-main scripts/validate-recovery.mjs"
   },
   "keywords": [
     "ai",
@@ -52,7 +61,7 @@
   "homepage": "https://github.com/Jeremiaheth/neolata-mem#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Jeremiaheth/neolata-mem"
+    "url": "git+https://github.com/Jeremiaheth/neolata-mem.git"
   },
   "publishConfig": {
     "@jeremiaheth:registry": "https://npm.pkg.github.com"

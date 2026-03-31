@@ -21,6 +21,7 @@ import { MemoryGraph } from './graph.mjs';
 import { openaiEmbeddings, noopEmbeddings } from './embeddings.mjs';
 import { jsonStorage, memoryStorage } from './storage.mjs';
 import { supabaseStorage } from './supabase-storage.mjs';
+import { jsonlWal } from './wal.mjs';
 import { llmExtraction, passthroughExtraction } from './extraction.mjs';
 import { openaiChat, openclawChat } from './llm.mjs';
 
@@ -146,11 +147,22 @@ export function createMemory(opts = {}) {
     });
   }
 
+  // Optional local WAL for mutation logging
+  let wal = null;
+  const walOpts = opts.wal;
+  if (walOpts && walOpts.enabled !== false) {
+    wal = jsonlWal({
+      dir: walOpts.dir,
+      filename: walOpts.filename,
+    });
+  }
+
   return new MemoryGraph({
     storage,
     embeddings,
     extraction,
     llm,
+    wal,
     config: {
       ...(opts.graph || {}),
       ...(opts.predicateSchemas !== undefined ? { predicateSchemas: opts.predicateSchemas } : {}),
@@ -163,8 +175,32 @@ export { MemoryGraph, tokenize, computeTrust, computeConfidence, estimateTokens,
 export { openaiEmbeddings, noopEmbeddings, cosineSimilarity } from './embeddings.mjs';
 export { jsonStorage, memoryStorage } from './storage.mjs';
 export { supabaseStorage } from './supabase-storage.mjs';
+export { jsonlWal, createWalMutationEvent, validateWalMutationEvent, WAL_EVENT_VERSION, WAL_MUTATION_OPS } from './wal.mjs';
+export { buildWalReplayTimeline, replayMutationSubset, readAndReplayWal } from './wal-replay.mjs';
+export {
+  WAL_SNAPSHOT_VERSION,
+  WAL_SNAPSHOT_KIND,
+  WAL_SNAPSHOT_FIELDS,
+  validateWalSnapshot,
+  createWalSnapshot,
+  selectWalEventsAfterSnapshot,
+  replaySnapshotAndWal,
+} from './wal-snapshot.mjs';
+export {
+  projectLiveMutationSubsetState,
+  compareMutationSubsetStates,
+  compareLiveStateToSnapshotReplay,
+} from './wal-equivalence.mjs';
+export {
+  WAL_RECOVERY_MANIFEST_VERSION,
+  buildLocalArtifactManifest,
+  verifyLocalArtifacts,
+  validateRecoveryDryRun,
+  formatRecoveryCheckReport,
+} from './wal-recovery.mjs';
 export { markdownWritethrough, webhookWritethrough } from './writethrough.mjs';
 export { llmExtraction, passthroughExtraction } from './extraction.mjs';
 export { openaiChat, openclawChat } from './llm.mjs';
 export { validateBaseUrl } from './validate.mjs';
 export { detectKeyMoments, heartbeatStore, extractTopicSlug, contextualRecall, preCompactionDump } from './runtime.mjs';
+
