@@ -53,12 +53,23 @@ function deriveCursorFromTimeline(timeline = [], applied = 0) {
     throw new Error(`snapshot wal.applied (${applied}) exceeds provided event count (${timeline.length})`);
   }
   const event = timeline[applied - 1];
-  return { at: event.at, id: event.id };
+  return {
+    at: event.at,
+    id: event.id,
+    ...(typeof event.seq === 'number' && Number.isInteger(event.seq) && event.seq >= 1 ? { seq: event.seq } : {}),
+  };
 }
 
 function compareEventToCursor(event, cursor) {
   const atDiff = new Date(event.at).getTime() - new Date(cursor.at).getTime();
   if (atDiff !== 0) return atDiff;
+  const eventSeq = typeof event.seq === 'number' && Number.isInteger(event.seq) && event.seq >= 1
+    ? event.seq
+    : null;
+  const cursorSeq = typeof cursor.seq === 'number' && Number.isInteger(cursor.seq) && cursor.seq >= 1
+    ? cursor.seq
+    : null;
+  if (eventSeq !== null && cursorSeq !== null && eventSeq !== cursorSeq) return eventSeq - cursorSeq;
   return event.id.localeCompare(cursor.id);
 }
 
@@ -96,6 +107,16 @@ export function validateWalSnapshot(snapshot) {
     ensureIso(snapshot.wal.cursor.at, 'snapshot.wal.cursor.at');
     if (typeof snapshot.wal.cursor.id !== 'string' || !snapshot.wal.cursor.id.trim()) {
       throw new Error('snapshot.wal.cursor.id must be a non-empty string');
+    }
+    if (
+      snapshot.wal.cursor.seq !== undefined &&
+      (
+        typeof snapshot.wal.cursor.seq !== 'number' ||
+        !Number.isInteger(snapshot.wal.cursor.seq) ||
+        snapshot.wal.cursor.seq < 1
+      )
+    ) {
+      throw new Error('snapshot.wal.cursor.seq must be a positive integer when present');
     }
   }
 

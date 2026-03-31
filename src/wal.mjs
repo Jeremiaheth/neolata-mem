@@ -18,6 +18,10 @@ function ensureIso(value, label) {
   if (Number.isNaN(t)) throw new Error(`${label} must be an ISO timestamp string`);
 }
 
+function isValidSeq(value) {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1;
+}
+
 export function validateWalMutationEvent(event) {
   ensureObject(event, 'event');
   if (event.v !== WAL_EVENT_VERSION) throw new Error(`event.v must be ${WAL_EVENT_VERSION}`);
@@ -27,13 +31,15 @@ export function validateWalMutationEvent(event) {
   if (typeof event.memoryId !== 'string' || !event.memoryId.trim()) throw new Error('event.memoryId must be a non-empty string');
   if (!(event.actor === null || typeof event.actor === 'string')) throw new Error('event.actor must be a string or null');
   ensureIso(event.at, 'event.at');
+  if (event.seq !== undefined && !isValidSeq(event.seq)) throw new Error('event.seq must be a positive integer when present');
   ensureObject(event.data, 'event.data');
 }
 
-export function createWalMutationEvent({ op, memoryId, actor = null, at, data = {} }) {
+export function createWalMutationEvent({ op, memoryId, actor = null, at, seq, data = {} }) {
   if (!WAL_MUTATION_OPS.has(op)) throw new Error(`Unsupported mutation op: ${op}`);
   if (typeof memoryId !== 'string' || !memoryId.trim()) throw new Error('memoryId must be a non-empty string');
   if (!(actor === null || typeof actor === 'string')) throw new Error('actor must be a string or null');
+  if (seq !== undefined && !isValidSeq(seq)) throw new Error('seq must be a positive integer when provided');
   ensureObject(data, 'data');
 
   const event = {
@@ -44,6 +50,7 @@ export function createWalMutationEvent({ op, memoryId, actor = null, at, data = 
     memoryId,
     actor,
     at: at || new Date().toISOString(),
+    ...(seq !== undefined ? { seq } : {}),
     data,
   };
 
@@ -63,15 +70,54 @@ export function jsonlWal({ dir, filename = 'mutations.wal' } = {}) {
   }
 
   const path = join(walDir, filename);
+  let nextSeq = null;
+  let appendChain = Promise.resolve();
+
+  async function readMaxSeq() {
+    if (!existsSync(path)) return 0;
+    let raw = await readFile(path, 'utf8');
+    if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+    let maxSeq = 0;
+    const lines = raw.split(/\r?\n/);
+    for (const line of lines) {
+      if (!line || !line.trim()) continue;
+      try {
+        const parsed = JSON.parse(line);
+        if (isValidSeq(parsed?.seq)) maxSeq = Math.max(maxSeq, parsed.seq);
+      } catch {
+        // Ignore malformed lines here; read() surfaces these separately.
+      }
+    }
+    return maxSeq;
+  }
+
+  async function reserveSeq() {
+    if (nextSeq === null) {
+      nextSeq = (await readMaxSeq()) + 1;
+    }
+    const seq = nextSeq;
+    nextSeq += 1;
+    return seq;
+  }
 
   return {
     name: 'jsonl-wal',
     path,
     async append(event) {
-      validateWalMutationEvent(event);
-      await mkdir(walDir, { recursive: true });
-      await appendFile(path, `${JSON.stringify(event)}\n`, 'utf8');
-      return event;
+      const op = async () => {
+        const hydrated = { ...event };
+        if (!isValidSeq(hydrated.seq)) {
+          hydrated.seq = await reserveSeq();
+        }
+        validateWalMutationEvent(hydrated);
+        await mkdir(walDir, { recursive: true });
+        await appendFile(path, `${JSON.stringify(hydrated)}\n`, 'utf8');
+        return hydrated;
+      };
+
+      const run = appendChain.then(op, op);
+      appendChain = run.then(() => undefined, () => undefined);
+      return run;
     },
     async appendMutation(input) {
       const event = createWalMutationEvent(input);

@@ -4,12 +4,23 @@ function asIsoTime(value) {
   return new Date(value).getTime();
 }
 
+function asSeq(value) {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 ? value : null;
+}
+
 export function compareReplayEvents(a, b) {
   const atDiff = asIsoTime(a.at) - asIsoTime(b.at);
   if (atDiff !== 0) return atDiff;
-  if (a.id !== b.id) return a.id.localeCompare(b.id);
-  if (a.memoryId !== b.memoryId) return a.memoryId.localeCompare(b.memoryId);
-  if (a.op !== b.op) return a.op.localeCompare(b.op);
+  const aSeq = asSeq(a.seq);
+  const bSeq = asSeq(b.seq);
+  if (aSeq !== null && bSeq !== null && aSeq !== bSeq) return aSeq - bSeq;
+  if (
+    typeof a.__replayIndex === 'number' &&
+    typeof b.__replayIndex === 'number' &&
+    a.__replayIndex !== b.__replayIndex
+  ) {
+    return a.__replayIndex - b.__replayIndex;
+  }
   return 0;
 }
 
@@ -148,11 +159,18 @@ function applyMutationEvent(state, event) {
 
 export function buildWalReplayTimeline(events = []) {
   const replayable = [];
+  let replayIndex = 0;
   for (const event of events) {
     validateWalMutationEvent(event);
-    replayable.push(event);
+    replayable.push({
+      ...event,
+      __replayIndex: replayIndex,
+    });
+    replayIndex += 1;
   }
-  return [...replayable].sort(compareReplayEvents);
+  return [...replayable]
+    .sort(compareReplayEvents)
+    .map(({ __replayIndex, ...event }) => event);
 }
 
 export function replayMutationSubset(events = [], { malformed = [] } = {}) {

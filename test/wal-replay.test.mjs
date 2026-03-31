@@ -13,32 +13,83 @@ import {
 } from '../src/wal-replay.mjs';
 
 describe('WAL replay primitives', () => {
-  it('orders replay timeline deterministically by timestamp then id', () => {
+  it('preserves append order when timestamps collide and seq is absent', () => {
     const events = [
       {
         v: WAL_EVENT_VERSION,
         type: 'mutation',
-        id: 'wal_c',
-        op: 'dispute',
-        memoryId: 'mem_1',
-        actor: 'agent-1',
-        at: '2026-01-01T00:00:02.000Z',
-        data: { disputes: 1 },
-      },
-      {
-        v: WAL_EVENT_VERSION,
-        type: 'mutation',
-        id: 'wal_b',
-        op: 'reinforce',
+        id: 'wal_z',
+        op: 'store',
         memoryId: 'mem_1',
         actor: 'agent-1',
         at: '2026-01-01T00:00:01.000Z',
-        data: { reinforcements: 1, importance: 0.9 },
+        data: { status: 'active', category: 'fact', importance: 0.7, links: 0 },
       },
       {
         v: WAL_EVENT_VERSION,
         type: 'mutation',
         id: 'wal_a',
+        op: 'quarantine',
+        memoryId: 'mem_1',
+        actor: 'agent-1',
+        at: '2026-01-01T00:00:01.000Z',
+        data: { reason: 'manual', details: 'review requested', status: 'quarantined' },
+      },
+    ];
+
+    const timeline = buildWalReplayTimeline(events);
+    expect(timeline.map((event) => event.id)).toEqual(['wal_z', 'wal_a']);
+    expect(timeline.map((event) => event.op)).toEqual(['store', 'quarantine']);
+  });
+
+  it('uses seq to replay same-timestamp events in append order', () => {
+    const events = [
+      {
+        v: WAL_EVENT_VERSION,
+        type: 'mutation',
+        id: 'wal_after',
+        seq: 2,
+        op: 'quarantine',
+        memoryId: 'mem_1',
+        actor: 'agent-1',
+        at: '2026-01-01T00:00:01.000Z',
+        data: { reason: 'manual', details: 'review requested', status: 'quarantined' },
+      },
+      {
+        v: WAL_EVENT_VERSION,
+        type: 'mutation',
+        id: 'wal_before',
+        seq: 1,
+        op: 'store',
+        memoryId: 'mem_1',
+        actor: 'agent-1',
+        at: '2026-01-01T00:00:01.000Z',
+        data: { status: 'active', category: 'fact', importance: 0.7, links: 0 },
+      },
+    ];
+
+    const replay = replayMutationSubset(events);
+    expect(replay.timeline.map((event) => event.id)).toEqual(['wal_before', 'wal_after']);
+    expect(replay.timeline.map((event) => event.op)).toEqual(['store', 'quarantine']);
+    expect(replay.byMemoryId.mem_1.status).toBe('quarantined');
+  });
+
+  it('replays legacy same-timestamp entries in file order when seq is absent', () => {
+    const events = [
+      {
+        v: WAL_EVENT_VERSION,
+        type: 'mutation',
+        id: 'wal_second',
+        op: 'quarantine',
+        memoryId: 'mem_1',
+        actor: 'agent-1',
+        at: '2026-01-01T00:00:01.000Z',
+        data: { reason: 'manual', details: 'review requested', status: 'quarantined' },
+      },
+      {
+        v: WAL_EVENT_VERSION,
+        type: 'mutation',
+        id: 'wal_first',
         op: 'store',
         memoryId: 'mem_1',
         actor: 'agent-1',
@@ -48,8 +99,7 @@ describe('WAL replay primitives', () => {
     ];
 
     const timeline = buildWalReplayTimeline(events);
-    expect(timeline.map((event) => event.id)).toEqual(['wal_a', 'wal_b', 'wal_c']);
-    expect(timeline.map((event) => event.op)).toEqual(['store', 'reinforce', 'dispute']);
+    expect(timeline.map((event) => event.id)).toEqual(['wal_second', 'wal_first']);
   });
 
   it('replays valid mutation subset events into deterministic scaffold state', () => {

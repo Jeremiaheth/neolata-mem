@@ -64,6 +64,35 @@ describe('WAL primitive', () => {
     expect(event.data).toEqual({ category: 'fact', links: 0 });
   });
 
+  it('assigns durable increasing seq values when appending', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'neolata-wal-seq-'));
+    try {
+      const wal = jsonlWal({ dir });
+      const at = '2026-01-01T00:00:00.000Z';
+      await wal.appendMutation({
+        op: 'store',
+        memoryId: 'mem_1',
+        actor: 'agent-a',
+        at,
+        data: { seq: 1 },
+      });
+      await wal.appendMutation({
+        op: 'quarantine',
+        memoryId: 'mem_1',
+        actor: 'agent-a',
+        at,
+        data: { status: 'quarantined', reason: 'manual' },
+      });
+
+      const { events, malformed } = await wal.read();
+      expect(malformed).toEqual([]);
+      expect(events).toHaveLength(2);
+      expect(events.map((event) => event.seq)).toEqual([1, 2]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('handles malformed lines by skipping in non-strict mode and throwing in strict mode', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'neolata-wal-malformed-'));
     try {
