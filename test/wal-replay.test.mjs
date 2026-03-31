@@ -169,16 +169,21 @@ describe('WAL replay primitives', () => {
       await graph.quarantine(stored.id, { reason: 'manual', details: 'review requested' });
 
       const replay = await readAndReplayWal({ wal, strict: true });
-      await graph.init();
-      const memory = graph.memories.find((item) => item.id === stored.id);
+      const memory = graph._byId(stored.id);
 
       expect(memory).toBeTruthy();
+      expect(memory.status).toBe('quarantined');
+      expect(memory.quarantine?.reason).toBe('manual');
       expect(replay.byMemoryId[stored.id]).toBeTruthy();
       expect(replay.byMemoryId[stored.id].status).toBe(memory.status);
       expect(replay.byMemoryId[stored.id].reinforcements).toBe(memory.reinforcements);
       expect(replay.byMemoryId[stored.id].disputes).toBe(memory.disputes);
       expect(replay.byMemoryId[stored.id].importance).toBe(memory.importance);
       expect(replay.byMemoryId[stored.id].category).toBe(memory.category);
+      expect(replay.byMemoryId[stored.id].quarantine).toEqual({
+        reason: memory.quarantine?.reason ?? null,
+        details: memory.quarantine?.details ?? null,
+      });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
