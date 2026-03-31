@@ -40,6 +40,16 @@ function createTestGraph(opts = {}) {
   });
 }
 
+function walFailingStorage() {
+  const base = memoryStorage();
+  return {
+    ...base,
+    async appendWal() {
+      throw new Error('simulated WAL append failure');
+    },
+  };
+}
+
 describe('MemoryGraph', () => {
   describe('store', () => {
     it('should store a memory and return an id', async () => {
@@ -94,6 +104,36 @@ describe('MemoryGraph', () => {
       }
       const r = await graph.store('a', 'Another memory about testing things');
       expect(r.links <= 2).toBeTruthy();
+    });
+
+    it('keeps committed state when WAL append fails', async () => {
+      const storage = walFailingStorage();
+      const graph = createTestGraph({ storage });
+
+      const result = await graph.store('agent-1', 'durable state should remain');
+      const loaded = await storage.load();
+
+      expect(result.id).toBeTruthy();
+      expect(loaded.some(m => m.id === result.id)).toBe(true);
+    });
+
+    it('returns explicit WAL degradation metadata when WAL append fails', async () => {
+      const graph = createTestGraph({ storage: walFailingStorage() });
+      const result = await graph.store('agent-1', 'wal warning metadata');
+
+      expect(result.wal).toBeDefined();
+      expect(result.wal.degraded).toBe(true);
+      expect(result.wal.appended).toBe(false);
+      expect(result.warnings[0].code).toBe('WAL_APPEND_FAILED');
+      expect(result.warnings[0].stage).toBe('wal_append');
+    });
+
+    it('does not throw generic failure after durable commit if WAL append fails', async () => {
+      const graph = createTestGraph({ storage: walFailingStorage() });
+
+      await expect(graph.store('agent-1', 'no false failure after commit')).resolves.toMatchObject({
+        id: expect.any(String),
+      });
     });
   });
 
