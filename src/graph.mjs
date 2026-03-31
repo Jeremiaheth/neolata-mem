@@ -448,6 +448,21 @@ export class MemoryGraph {
     await this.storage.save(this.memories);
   }
 
+  async _appendStoreWal(entry) {
+    if (typeof this.storage?.appendWal !== 'function') return null;
+    try {
+      await this.storage.appendWal(entry);
+      return null;
+    } catch (error) {
+      return {
+        code: 'WAL_APPEND_FAILED',
+        stage: 'wal_append',
+        message: 'State committed, but WAL append failed',
+        details: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
   // ══════════════════════════════════════════════════════════
   // STORE — A-MEM auto-linking
   // ══════════════════════════════════════════════════════════
@@ -724,6 +739,13 @@ export class MemoryGraph {
       },
     });
 
+    const walWarning = await this._appendStoreWal({
+      op: 'store',
+      id,
+      agent,
+      committed_at: new Date().toISOString(),
+    });
+
     // Emit store event
     this.emit('store', { id, agent, content: text, category, importance, links: topLinks.length });
 
@@ -735,6 +757,8 @@ export class MemoryGraph {
         : 'none',
       ...(newMem.status === 'quarantined' ? { quarantined: true } : {}),
       ...(pendingConflictId ? { pendingConflictId } : {}),
+      ...(walWarning ? { wal: { degraded: true, appended: false, warning: walWarning } } : {}),
+      ...(walWarning ? { warnings: [walWarning] } : {}),
     };
   }
 
