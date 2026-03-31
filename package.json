@@ -24,7 +24,9 @@
   "files": [
     "src/",
     "cli/",
-    "docs/*.md",
+    "docs/guide.md",
+    "docs/implementation-notes.md",
+    "docs/runtime-helpers.md",
     "LICENSE",
     "README.md"
   ],
@@ -59,7 +61,7 @@
   "homepage": "https://github.com/Jeremiaheth/neolata-mem#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Jeremiaheth/neolata-mem"
+    "url": "git+https://github.com/Jeremiaheth/neolata-mem.git"
   },
   "engines": {
     "node": ">=18.0.0"
