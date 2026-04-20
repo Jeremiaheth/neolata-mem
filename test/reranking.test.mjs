@@ -72,6 +72,19 @@ describe('Search reranking', () => {
     expect(typeof results[0].rankingSignals.importance).toBe('number');
   });
 
+  it('fills confidence before returning unreranked results', async () => {
+    const results = await graph.search('a', 'alpha beta gamma', { limit: 5, rerank: false });
+    expect(results.length).toBeGreaterThan(0);
+    expect(results.every(r => typeof r.confidence === 'number')).toBe(true);
+  });
+
+  it('applies limit after reranking or fallback sorting', async () => {
+    const reranked = await graph.search('a', 'alpha beta gamma', { limit: 2 });
+    const raw = await graph.search('a', 'alpha beta gamma', { limit: 2, rerank: false });
+    expect(reranked).toHaveLength(2);
+    expect(raw).toHaveLength(2);
+  });
+
   it('rerank: false keeps raw similarity ordering', async () => {
     const results = await graph.search('a', 'alpha beta gamma', { limit: 5, rerank: false });
     expect(results[0].id).toBe(ids.lowTrustHighSim);
@@ -107,5 +120,23 @@ describe('Search reranking', () => {
     expect(batches[0].results[0].rankingSignals).toBeTruthy();
     expect(typeof batches[1].results[0].compositeScore).toBe('number');
     expect(batches[1].results[0].rankingSignals).toBeTruthy();
+  });
+
+  it('searchMany vector results match search() ordering when rerank is disabled', async () => {
+    const single = await graph.search('a', 'alpha beta gamma', { limit: 3, rerank: false });
+    const batch = await graph.searchMany('a', ['alpha beta gamma'], { limit: 3, rerank: false });
+    expect(batch[0].results.map(r => r.id)).toEqual(single.map(r => r.id));
+  });
+
+  it('searchMany vector results match search() ordering when rerank is enabled', async () => {
+    const single = await graph.search('a', 'alpha beta gamma', { limit: 3 });
+    const batch = await graph.searchMany('a', ['alpha beta gamma'], { limit: 3 });
+    expect(batch[0].results.map(r => r.id)).toEqual(single.map(r => r.id));
+  });
+
+  it('searchMany matches search() minSimilarity filtering for vector queries', async () => {
+    const single = await graph.search('a', 'alpha beta gamma', { limit: 5, minSimilarity: 0.95, rerank: false });
+    const batch = await graph.searchMany('a', ['alpha beta gamma'], { limit: 5, minSimilarity: 0.95, rerank: false });
+    expect(batch[0].results.map(r => r.id)).toEqual(single.map(r => r.id));
   });
 });

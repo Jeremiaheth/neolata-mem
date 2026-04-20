@@ -115,12 +115,73 @@ describe('MemoryGraph', () => {
       expect(results.every(r => r.agent === 'agent-1')).toBeTruthy();
     });
 
+    it('should filter by before/after event window', async () => {
+      const graph = createTestGraph();
+      const older = await graph.store('agent-1', 'Older windowed memory');
+      const newer = await graph.store('agent-1', 'Newer windowed memory');
+
+      graph._byId(older.id).event_at = '2026-01-01T00:00:00.000Z';
+      graph._byId(newer.id).event_at = '2026-01-03T00:00:00.000Z';
+
+      const results = await graph.search('agent-1', 'windowed memory', {
+        after: '2026-01-02T00:00:00.000Z',
+        before: '2026-01-04T00:00:00.000Z',
+        includeAll: true,
+      });
+
+      expect(results.map(r => r.id)).toEqual([newer.id]);
+    });
+
+    it('should exclude superseded memories by default but keep explicitly allowed statuses', async () => {
+      const graph = createTestGraph();
+      const active = await graph.store('agent-1', 'Active status memory');
+      const superseded = await graph.store('agent-1', 'Superseded status memory');
+
+      graph._byId(active.id).status = 'active';
+      graph._byId(superseded.id).status = 'superseded';
+
+      const defaultResults = await graph.search('agent-1', 'status memory');
+      expect(defaultResults.map(r => r.id)).toEqual([active.id]);
+
+      const includedResults = await graph.search('agent-1', 'status memory', {
+        statusFilter: ['active', 'superseded'],
+      });
+      expect(includedResults.map(r => r.id)).toContain(superseded.id);
+    });
+
     it('should search all agents with searchAll', async () => {
       const graph = createTestGraph();
       await graph.store('agent-1', 'Shared knowledge about APIs');
       await graph.store('agent-2', 'Shared knowledge about APIs too');
       const results = await graph.searchAll('APIs');
       expect(results.length >= 2).toBeTruthy();
+    });
+
+    it('should prefer session-scoped claim memories over overlapping global claims for the same session', async () => {
+      const graph = createTestGraph();
+      await graph.store('agent-1', 'User timezone is UTC globally', {
+        claim: { subject: 'user', predicate: 'timezone', value: 'UTC', scope: 'global' },
+      });
+      const sessionScoped = await graph.store('agent-1', 'User timezone is WAT in this session', {
+        claim: { subject: 'user', predicate: 'timezone', value: 'WAT', scope: 'session', sessionId: 'sess-1' },
+      });
+
+      const results = await graph.search('agent-1', 'timezone', { sessionId: 'sess-1' });
+      expect(results.some(r => r.id === sessionScoped.id)).toBe(true);
+      expect(results.some(r => r.claim?.scope === 'global' && r.claim?.predicate === 'timezone')).toBe(false);
+    });
+
+    it('should fall back to keyword results when embedding candidates are exhausted by filters', async () => {
+      const graph = createTestGraph();
+      await graph.store('agent-1', 'keyword only fallback target');
+
+      const stored = graph.memories[0];
+      stored.embedding = null;
+
+      const results = await graph.search('agent-1', 'fallback target', { minSimilarity: 0.99 });
+      expect(results.length).toBe(1);
+      expect(results[0].memory).toContain('fallback target');
+      expect(results[0].score).toBeGreaterThan(0);
     });
   });
 
@@ -246,6 +307,50 @@ describe('MemoryGraph', () => {
       expect(clusters.length >= 0).toBeTruthy(); // May or may not cluster depending on fake embeddings
     });
 
+    it('clusters connected components without duplicating nodes across clusters', async () => {
+      const graph = createTestGraph();
+      const now = new Date().toISOString();
+      graph.memories = [
+        { id: 'c1a', agent: 'a', memory: 'cluster 1 a', category: 'fact', importance: 0.7, tags: ['alpha'], embedding: null, links: [{ id: 'c1b', similarity: 0.9, type: 'similar' }], created_at: now, updated_at: now },
+        { id: 'c1b', agent: 'a', memory: 'cluster 1 b', category: 'fact', importance: 0.7, tags: ['alpha', 'shared'], embedding: null, links: [{ id: 'c1a', similarity: 0.9, type: 'similar' }], created_at: now, updated_at: now },
+        { id: 'c2a', agent: 'b', memory: 'cluster 2 a', category: 'decision', importance: 0.9, tags: ['beta'], embedding: null, links: [{ id: 'c2b', similarity: 0.8, type: 'similar' }], created_at: now, updated_at: now },
+        { id: 'c2b', agent: 'b', memory: 'cluster 2 b', category: 'decision', importance: 0.9, tags: ['beta', 'shared'], embedding: null, links: [{ id: 'c2a', similarity: 0.8, type: 'similar' }], created_at: now, updated_at: now },
+      ];
+      graph.loaded = true;
+      graph._rebuildIndexes();
+
+      const clusters = await graph.clusters(2);
+      expect(clusters).toHaveLength(2);
+
+      const allIds = clusters.flatMap(cluster => cluster.memories.map(m => m.id));
+      expect(new Set(allIds).size).toBe(4);
+      expect(allIds.sort()).toEqual(['c1a', 'c1b', 'c2a', 'c2b']);
+
+      const sizes = clusters.map(c => c.size).sort((a, b) => a - b);
+      expect(sizes).toEqual([2, 2]);
+      expect(clusters.every(c => typeof c.agents === 'object')).toBe(true);
+      expect(clusters.every(c => Array.isArray(c.topTags))).toBe(true);
+      expect(clusters.some(c => c.topTags.includes('alpha'))).toBe(true);
+      expect(clusters.some(c => c.topTags.includes('beta'))).toBe(true);
+    });
+
+    it('annotates clusters from labeled cluster overlap', async () => {
+      const graph = createTestGraph();
+      const now = new Date().toISOString();
+      graph.memories = [
+        { id: 'lc1', agent: 'a', memory: 'labeled cluster 1', category: 'fact', importance: 0.7, tags: [], embedding: null, links: [{ id: 'lc2', similarity: 0.9, type: 'similar' }], created_at: now, updated_at: now },
+        { id: 'lc2', agent: 'a', memory: 'labeled cluster 2', category: 'fact', importance: 0.7, tags: [], embedding: null, links: [{ id: 'lc1', similarity: 0.9, type: 'similar' }], created_at: now, updated_at: now },
+      ];
+      graph.loaded = true;
+      graph._rebuildIndexes();
+      graph._clustersLoaded = true;
+      graph.labeledClusters = [{ id: 'cluster-1', label: 'Security Topics', memoryIds: ['lc1', 'lc2'] }];
+
+      const clusters = await graph.clusters(2);
+      expect(clusters[0].label).toBe('Security Topics');
+      expect(clusters[0].clusterId).toBe('cluster-1');
+    });
+
     it('should find shortest path', async () => {
       const graph = createTestGraph({ config: { linkThreshold: 0.1 } });
       const r1 = await graph.store('a', 'Node A connects to node B');
@@ -338,6 +443,28 @@ describe('MemoryGraph', () => {
       const result = await graph.links('mem_old-1');
       expect(result.links[0].type).toBe('similar');
     });
+
+    it('should render deleted linked memories with fallback fields', async () => {
+      const graph = createTestGraph();
+      graph.memories.push({
+        id: 'mem_anchor', agent: 'a', memory: 'anchor memory', category: 'fact',
+        importance: 0.7, tags: [], embedding: null,
+        links: [{ id: 'mem_missing', similarity: 0.5, type: 'related' }],
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      });
+      graph.loaded = true;
+      graph._rebuildIndexes();
+
+      const result = await graph.links('mem_anchor');
+      expect(result.links).toEqual([{
+        id: 'mem_missing',
+        similarity: 0.5,
+        type: 'related',
+        memory: '(deleted)',
+        agent: '?',
+        category: '?',
+      }]);
+    });
   });
 
   describe('traverse with type filter', () => {
@@ -375,6 +502,21 @@ describe('MemoryGraph', () => {
       const noPath = await graph.path('mem_x', 'mem_z', { types: ['similar'] });
       expect(noPath.found).toBe(false);
       const found = await graph.path('mem_x', 'mem_z', { types: ['supersedes'] });
+      expect(found.found).toBe(true);
+      expect(found.hops).toBe(1);
+    });
+
+    it('treats missing link types as similar when filtering paths', async () => {
+      const graph = createTestGraph();
+      const now = new Date().toISOString();
+      graph.memories = [
+        { id: 'mem_p', agent: 'a', memory: 'p', category: 'fact', importance: 0.7, tags: [], embedding: null, links: [{ id: 'mem_q', similarity: 0.9 }], created_at: now, updated_at: now },
+        { id: 'mem_q', agent: 'a', memory: 'q', category: 'fact', importance: 0.7, tags: [], embedding: null, links: [{ id: 'mem_p', similarity: 0.9 }], created_at: now, updated_at: now },
+      ];
+      graph.loaded = true;
+      graph._rebuildIndexes();
+
+      const found = await graph.path('mem_p', 'mem_q', { types: ['similar'] });
       expect(found.found).toBe(true);
       expect(found.hops).toBe(1);
     });

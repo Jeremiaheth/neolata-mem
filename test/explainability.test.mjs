@@ -38,6 +38,27 @@ describe('Explainability API', () => {
     expect(typeof results[0].explain.rerank.compositeScore).toBe('number');
   });
 
+  it('search explain meta preserves sanitized options and excluded breakdown', async () => {
+    const graph = createGraph();
+    await graph.store('a', 'alpha explain meta active');
+    const superseded = await graph.store('a', 'alpha explain meta superseded');
+    graph._byId(superseded.id).status = 'superseded';
+
+    const results = await graph.search('a', 'alpha explain meta', {
+      explain: true,
+      limit: 3,
+      minSimilarity: 0.2,
+      statusFilter: ['active'],
+    });
+
+    expect(results.meta).toBeTruthy();
+    expect(results.meta.options.limit).toBe(3);
+    expect(results.meta.options.minSimilarity).toBe(0.2);
+    expect(results.meta.options.statusFilter).toEqual(['active']);
+    expect(results.meta.excluded).toBeTruthy();
+    expect(typeof results.meta.excluded.superseded).toBe('number');
+  });
+
   it('search explain excluded breakdown increments superseded and quarantined', async () => {
     const graph = createGraph();
     const active = await graph.store('a', 'status explain active');

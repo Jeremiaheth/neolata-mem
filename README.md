@@ -159,6 +159,18 @@ const chain = await mem.explainSupersession(memoryId);
 // { superseded, supersededBy, trustComparison: { original, superseding, delta } }
 ```
 
+Batch search uses the same retrieval pipeline as `search()`, including keyword fallback, local vector scoring, reranking, and final result shaping:
+
+```javascript
+const batches = await mem.searchMany('kuro', [
+  'database security',
+  'incident response',
+], { limit: 3 });
+
+console.log(batches[0].query);
+console.log(batches[0].results[0]);
+```
+
 ### 🌐 Multi-Agent
 
 Native support for multiple agents with cross-agent search:
@@ -196,6 +208,13 @@ const timeline = await mem.timeline('kuro', 7);  // Last 7 days
 // Context generation (for RAG / prompt injection)
 const ctx = await mem.context('kuro', 'database security');
 // Returns formatted briefing with 1-hop expansion from top results
+```
+
+Graph-query helpers also support typed traversals and path filters:
+
+```javascript
+const traversal = await mem.traverse(memoryId, 2, { types: ['similar'] });
+const path = await mem.path(idA, idB, { types: ['supersedes', 'similar'] });
 ```
 
 ## Configuration
@@ -243,6 +262,8 @@ const mem = createMemory({
     maxMemories: 50000,        // Max total memories (prevents unbounded growth)
     maxMemoryLength: 10000,    // Max characters per memory text
     maxAgentLength: 64,        // Max agent name length
+    maxBatchSize: 1000,        // Max items per storeMany() call
+    maxQueryBatchSize: 100,    // Max queries per searchMany() call
     evolveMinIntervalMs: 1000, // Rate limit between evolve() calls (ms)
   },
 });

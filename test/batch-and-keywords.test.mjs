@@ -261,6 +261,34 @@ describe('searchMany', () => {
     expect(results[1].results.length).toBe(1);
   });
 
+  it('matches search() status filtering behavior for keyword fallback', async () => {
+    const graph = new MemoryGraph({ storage: memStorage(), embeddings: noopEmbed() });
+    const active = await graph.store('a', 'keyword parity active');
+    const superseded = await graph.store('a', 'keyword parity superseded');
+
+    graph._byId(active.id).status = 'active';
+    graph._byId(superseded.id).status = 'superseded';
+
+    const single = await graph.search('a', 'keyword parity', { statusFilter: ['active'] });
+    const batch = await graph.searchMany('a', ['keyword parity'], { statusFilter: ['active'] });
+
+    expect(batch[0].results.map(r => r.id)).toEqual(single.map(r => r.id));
+  });
+
+  it('matches search() recent-only behavior for empty query', async () => {
+    const graph = new MemoryGraph({ storage: memStorage(), embeddings: noopEmbed() });
+    const older = await graph.store('a', 'older batch recent');
+    const newer = await graph.store('a', 'newer batch recent');
+
+    graph._byId(older.id).created_at = '2026-01-01T00:00:00.000Z';
+    graph._byId(newer.id).created_at = '2026-01-02T00:00:00.000Z';
+
+    const single = await graph.search('a', '', { limit: 5 });
+    const batch = await graph.searchMany('a', [''], { limit: 5 });
+
+    expect(batch[0].results.map(r => r.id)).toEqual(single.map(r => r.id));
+  });
+
   it('validates inputs', async () => {
     const graph = new MemoryGraph({ storage: memStorage(), embeddings: noopEmbed() });
     await expect(graph.searchMany('a', [])).rejects.toThrow('non-empty array');

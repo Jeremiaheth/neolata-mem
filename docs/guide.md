@@ -357,6 +357,12 @@ const results = await mem.search('kuro', 'web vulnerabilities', { limit: 10 });
 
 // All agents
 const results = await mem.searchAll('web vulnerabilities', { limit: 10 });
+
+// Batch search (uses the same retrieval pipeline as search())
+const batches = await mem.searchMany('kuro', [
+  'web vulnerabilities',
+  'incident response',
+], { limit: 5 });
 ```
 
 Each result:
@@ -426,6 +432,8 @@ Walk the graph N hops from a starting memory:
 ```javascript
 const result = await mem.traverse(memoryId, 3);
 // { start, hops, reached, nodes: [{ id, memory, agent, hop, similarity }] }
+
+const typed = await mem.traverse(memoryId, 3, { types: ['similar', 'supersedes'] });
 ```
 
 ### Clusters
@@ -442,6 +450,8 @@ const clusters = await mem.clusters(3);  // Min 3 memories per cluster
 ```javascript
 const result = await mem.path(idA, idB);
 // { found: true, hops: 2, path: [memA, memBridge, memB] }
+
+const typed = await mem.path(idA, idB, { types: ['similar'] });
 ```
 
 ### Orphans

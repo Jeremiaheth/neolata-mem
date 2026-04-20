@@ -16,56 +16,13 @@
 
 import { cosineSimilarity } from './embeddings.mjs';
 import { createWalMutationEvent } from './wal.mjs';
+import { tokenize, computeTrust, computeConfidence, estimateTokens, claimComparableValue, normalizeClaim } from './graph-utils.mjs';
+import { storeSingle, storeBatch } from './mutations.mjs';
+
+export { tokenize, computeTrust, computeConfidence, estimateTokens, normalizeClaim } from './graph-utils.mjs';
 
 /** @typedef {{ id: string, agent: string, memory: string, category: string, importance: number, tags: string[], embedding: number[]|null, links: {id: string, similarity: number, type?: string}[], created_at: string, updated_at: string, evolution?: object[], accessCount?: number }} Memory */
 
-// ── Keyword normalization helpers ──────────────────────────
-const STOP_WORDS = new Set([
-  'a','an','the','is','are','was','were','be','been','being',
-  'have','has','had','do','does','did','will','would','could',
-  'should','may','might','shall','can','need','dare','ought',
-  'to','of','in','for','on','with','at','by','from','as','into',
-  'through','during','before','after','above','below','between',
-  'and','but','or','nor','not','so','yet','both','either','neither',
-  'it','its','this','that','these','those','i','me','my','we','our',
-]);
-
-/**
- * Tokenize text into normalized terms (lowercase, alphanumeric, no stop words, deduped).
- * @param {string} text
- * @returns {string[]}
- */
-export function tokenize(text) {
-  return [...new Set(
-    text.toLowerCase()
-      .replace(/[^a-z0-9\s]/g, ' ')
-      .split(/\s+/)
-      .filter(w => w.length > 1 && !STOP_WORDS.has(w))
-  )];
-}
-
-const SOURCE_WEIGHTS = {
-  user_explicit: 1.0, system: 0.95, tool_output: 0.85,
-  user_implicit: 0.7, document: 0.6, inference: 0.5,
-};
-
-export function computeTrust(provenance, reinforcements = 0, disputes = 0, ageDays = 0) {
-  const sourceBase = SOURCE_WEIGHTS[provenance?.source] || 0.5;
-  const corroborationBonus = Math.min(0.2, ((provenance?.corroboration || 1) - 1) * 0.05);
-  const feedbackTotal = reinforcements + disputes;
-  const feedbackSignal = feedbackTotal > 0 ? ((reinforcements - disputes) / feedbackTotal) * 0.15 : 0;
-  const recencyPenalty = Math.max(0, Math.min(0.1, ageDays / 365 * 0.1));
-  return Math.max(0, Math.min(1.0, sourceBase + corroborationBonus + feedbackSignal - recencyPenalty));
-}
-
-export function computeConfidence(mem) {
-  // Confidence = trustworthiness only (decoupled from importance/recency to avoid double-counting in reranker)
-  return +(mem.provenance?.trust ?? 0.5).toFixed(4);
-}
-
-export function estimateTokens(text) {
-  return Math.ceil((text || '').length / 4);
-}
 
 function _validityOverlaps(a, b) {
   const aFrom = a?.validFrom ? new Date(a.validFrom).getTime() : -Infinity;
@@ -87,60 +44,7 @@ const VALID_CONFLICT_POLICY = new Set(['supersede', 'require_review', 'keep_both
 const VALID_NORMALIZERS = new Set(['none', 'trim', 'lowercase', 'lowercase_trim', 'currency']);
 const VALID_DEDUP_POLICY = new Set(['corroborate', 'store']);
 
-function normalizeNone(value) {
-  return value;
-}
-
-function normalizeTrim(value) {
-  return typeof value === 'string' ? value.trim() : value;
-}
-
-function normalizeLowercase(value) {
-  return typeof value === 'string' ? value.toLowerCase() : value;
-}
-
-function normalizeLowercaseTrim(value) {
-  return typeof value === 'string' ? value.trim().toLowerCase() : value;
-}
-
-function normalizeCurrency(value) {
-  if (typeof value !== 'string') return value;
-  const original = value;
-  const text = value.trim();
-  if (!text) return original;
-
-  const lower = text.toLowerCase();
-  let currency = null;
-
-  if (/\b(usd|us\$)\b/.test(lower) || /\$/.test(text) || /dollars?/.test(lower) || /bucks?/.test(lower)) currency = 'USD';
-  else if (/\b(eur)\b/.test(lower) || /€/.test(text) || /euros?/.test(lower)) currency = 'EUR';
-  else if (/\b(gbp)\b/.test(lower) || /£/.test(text) || /\bpounds?\b/.test(lower) || /\bsterling\b/.test(lower)) currency = 'GBP';
-  else if (/\b(jpy)\b/.test(lower) || /¥/.test(text) || /\byen\b/.test(lower)) currency = 'JPY';
-  else if (/\b(cad)\b/.test(lower) || /\bc\$\b/.test(lower)) currency = 'CAD';
-  else if (/\b(aud)\b/.test(lower) || /\ba\$\b/.test(lower)) currency = 'AUD';
-  else if (/\b(inr)\b/.test(lower) || /₹/.test(text) || /\brupees?\b/.test(lower)) currency = 'INR';
-
-  const amountMatch = text.match(/-?\d[\d,]*(?:\.\d+)?/);
-  if (!currency || !amountMatch) return original;
-  const amount = Number.parseFloat(amountMatch[0].replace(/,/g, ''));
-  if (!Number.isFinite(amount)) return original;
-  const amountText = Number.isInteger(amount) ? String(amount) : String(Number.parseFloat(amount.toFixed(12)));
-  return `${currency} ${amountText}`;
-}
-
-const CLAIM_NORMALIZERS = Object.freeze({
-  none: normalizeNone,
-  trim: normalizeTrim,
-  lowercase: normalizeLowercase,
-  lowercase_trim: normalizeLowercaseTrim,
-  currency: normalizeCurrency,
-});
-
 const QUARANTINE_REASONS = new Set(['trust_insufficient', 'predicate_requires_review', 'suspicious_input', 'manual']);
-
-function claimComparableValue(claim) {
-  return claim?.normalizedValue ?? claim?.value;
-}
 
 function normalizePredicateSchemaInput(predicate, schema = {}) {
   if (typeof predicate !== 'string' || !predicate.trim()) {
@@ -172,15 +76,6 @@ function normalizePredicateSchemaInput(predicate, schema = {}) {
   }
 
   return normalized;
-}
-
-export function normalizeClaim(claim, normalize = 'none') {
-  if (!claim || typeof claim !== 'object') return claim;
-  const normalizedClaim = { ...claim };
-  const mode = normalize || 'none';
-  const normalizer = CLAIM_NORMALIZERS[mode] || CLAIM_NORMALIZERS.none;
-  normalizedClaim.normalizedValue = normalizer(claim.value);
-  return normalizedClaim;
 }
 
 function createQuarantine(reason, { details, createdAt } = {}) {
@@ -448,6 +343,576 @@ export class MemoryGraph {
     await this.storage.save(this.memories);
   }
 
+  memoryCount() {
+    return this.memories.length;
+  }
+
+  listMemories() {
+    return this.memories;
+  }
+
+  async ensureInitialized() {
+    await this.init();
+  }
+
+  getMaxAgentLength() {
+    return this.config.maxAgentLength;
+  }
+
+  getMaxMemoryLength() {
+    return this.config.maxMemoryLength;
+  }
+
+  getMaxMemories() {
+    return this.config.maxMemories;
+  }
+
+  getMaxBatchSize() {
+    return this.config.maxBatchSize;
+  }
+
+  getLinkThreshold() {
+    return this.config.linkThreshold;
+  }
+
+  getMaxLinksPerMemory() {
+    return this.config.maxLinksPerMemory;
+  }
+
+  generateId() {
+    return this.storage.genId();
+  }
+
+  async persistMemory(mem) {
+    if (!this.storage.incremental) return false;
+    await this.storage.upsert(mem);
+    return true;
+  }
+
+  async persistLinks(sourceId, links) {
+    if (!this.storage.incremental || typeof this.storage.upsertLinks !== 'function' || !links?.length) return false;
+    await this.storage.upsertLinks(sourceId, links);
+    return true;
+  }
+
+  async removePersistedMemory(id) {
+    if (!this.storage.incremental || typeof this.storage.remove !== 'function') return false;
+    await this.storage.remove(id);
+    return true;
+  }
+
+  addPendingConflict(conflict) {
+    this._pendingConflicts.push(conflict);
+  }
+
+  async ensurePendingConflictsLoaded() {
+    await this._initPendingConflicts();
+  }
+
+  async persistPendingConflicts() {
+    await this._savePendingConflicts();
+  }
+
+  appendMemory(mem) {
+    this.memories.push(mem);
+  }
+
+  replaceMemories(memories) {
+    this.memories = memories;
+  }
+
+  indexMemory(mem) {
+    this._indexMemory(mem);
+  }
+
+  deindexMemory(mem) {
+    this._deindexMemory(mem);
+  }
+
+  getMemoryById(id) {
+    return this._byId(id);
+  }
+
+  getPredicateSchemaOrDefault(predicate) {
+    return this._getEffectivePredicateSchema(predicate);
+  }
+
+  findExactClaimDuplicate(claim) {
+    return this._findExactClaimDuplicate(claim);
+  }
+
+  findStructuralConflicts(claim) {
+    return this._structuralConflictCheck(claim);
+  }
+
+  quarantineMemory(mem, options) {
+    this._markQuarantined(mem, options);
+  }
+
+  async appendMutationWal(op, payload) {
+    await this._appendWal(op, payload);
+  }
+
+  async corroborateMemory(id) {
+    await this.corroborate(id);
+  }
+
+  emitMutationEvent(event, payload) {
+    this.emit(event, payload);
+  }
+
+  createMutationAdapter() {
+    return {
+      embeddings: this.embeddings,
+      isIncremental: !!this.storage.incremental,
+      save: this.save.bind(this),
+      memoryCount: this.memoryCount.bind(this),
+      listMemories: this.listMemories.bind(this),
+      ensureInitialized: this.ensureInitialized.bind(this),
+      getMaxAgentLength: this.getMaxAgentLength.bind(this),
+      getMaxMemoryLength: this.getMaxMemoryLength.bind(this),
+      getMaxMemories: this.getMaxMemories.bind(this),
+      getMaxBatchSize: this.getMaxBatchSize.bind(this),
+      getLinkThreshold: this.getLinkThreshold.bind(this),
+      getMaxLinksPerMemory: this.getMaxLinksPerMemory.bind(this),
+      generateId: this.generateId.bind(this),
+      persistMemory: this.persistMemory.bind(this),
+      persistLinks: this.persistLinks.bind(this),
+      removePersistedMemory: this.removePersistedMemory.bind(this),
+      addPendingConflict: this.addPendingConflict.bind(this),
+      ensurePendingConflictsLoaded: this.ensurePendingConflictsLoaded.bind(this),
+      persistPendingConflicts: this.persistPendingConflicts.bind(this),
+      appendMemory: this.appendMemory.bind(this),
+      replaceMemories: this.replaceMemories.bind(this),
+      indexMemory: this.indexMemory.bind(this),
+      deindexMemory: this.deindexMemory.bind(this),
+      getMemoryById: this.getMemoryById.bind(this),
+      getPredicateSchemaOrDefault: this.getPredicateSchemaOrDefault.bind(this),
+      findExactClaimDuplicate: this.findExactClaimDuplicate.bind(this),
+      findStructuralConflicts: this.findStructuralConflicts.bind(this),
+      quarantineMemory: this.quarantineMemory.bind(this),
+      appendMutationWal: this.appendMutationWal.bind(this),
+      corroborateMemory: this.corroborateMemory.bind(this),
+      emitMutationEvent: this.emitMutationEvent.bind(this),
+    };
+  }
+
+  _shapeRetrievedMemory(memory, score, retrieved = null) {
+    const out = { ...memory, score, embedding: undefined };
+    if (retrieved) out.__retrieved = retrieved;
+    return out;
+  }
+
+  _buildRecentResults(candidates, limit, { explainEnabled = false } = {}) {
+    return [...candidates]
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .slice(0, limit)
+      .map(m => this._shapeRetrievedMemory(
+        m,
+        0,
+        explainEnabled ? { vectorSimilarity: null, keywordScore: 0, keywordHits: 0 } : null,
+      ));
+  }
+
+  _buildKeywordFallbackResults(candidates, query, limit, { explainEnabled = false, restrictToCandidates = false } = {}) {
+    const queryTokens = tokenize(query);
+    if (queryTokens.length === 0) {
+      const q = query.toLowerCase();
+      return candidates
+        .filter(m => m.memory.toLowerCase().includes(q))
+        .slice(0, limit)
+        .map(m => this._shapeRetrievedMemory(
+          m,
+          1.0,
+          explainEnabled ? { vectorSimilarity: null, keywordScore: 1.0, keywordHits: 1 } : null,
+        ));
+    }
+
+    const candidateIds = restrictToCandidates ? new Set(candidates.map(m => m.id)) : null;
+    const fallbackResults = [];
+    const scored = new Map();
+    for (const token of queryTokens) {
+      const ids = this._tokenIndex.get(token);
+      if (!ids) continue;
+      for (const id of ids) {
+        if (candidateIds && !candidateIds.has(id)) continue;
+        scored.set(id, (scored.get(id) || 0) + 1);
+      }
+    }
+
+    for (const [id, count] of scored) {
+      const mem = this._byId(id);
+      if (!mem) continue;
+      fallbackResults.push(this._shapeRetrievedMemory(
+        mem,
+        count / queryTokens.length,
+        explainEnabled ? { vectorSimilarity: null, keywordScore: count / queryTokens.length, keywordHits: count } : null,
+      ));
+    }
+
+    fallbackResults.sort((a, b) => b.score - a.score || b.importance - a.importance);
+    return fallbackResults.slice(0, limit);
+  }
+
+  _filterSearchCandidates(candidates, {
+    agent,
+    includeAll,
+    effectiveStatusFilter,
+    before,
+    after,
+    counts = null,
+    excluded = null,
+  } = {}) {
+    let filtered = candidates;
+
+    if (agent) filtered = filtered.filter(m => m.agent === agent);
+    if (counts) counts.afterAgentFilter = filtered.length;
+
+    if (!includeAll) {
+      const allowed = new Set(effectiveStatusFilter);
+      if (excluded) {
+        const statusFiltered = [];
+        for (const m of filtered) {
+          if (!m.status || allowed.has(m.status)) {
+            statusFiltered.push(m);
+            continue;
+          }
+          if (m.status === 'superseded') excluded.superseded++;
+          else if (m.status === 'disputed') excluded.disputed++;
+          else if (m.status === 'quarantined') excluded.quarantined++;
+          else if (m.status === 'archived') excluded.archived++;
+        }
+        filtered = statusFiltered;
+      } else {
+        filtered = filtered.filter(m => !m.status || allowed.has(m.status));
+      }
+    }
+    if (counts) counts.afterStatusFilter = filtered.length;
+
+    if (before || after) {
+      const beforeMs = before ? new Date(before).getTime() : Infinity;
+      const afterMs = after ? new Date(after).getTime() : -Infinity;
+      if (before && isNaN(beforeMs)) throw new Error('search: "before" must be a valid date string');
+      if (after && isNaN(afterMs)) throw new Error('search: "after" must be a valid date string');
+      if (excluded) {
+        const dateFiltered = [];
+        for (const m of filtered) {
+          const t = new Date(m.event_at || m.created_at).getTime();
+          if (t <= beforeMs && t >= afterMs) dateFiltered.push(m);
+          else excluded.validityMismatch++;
+        }
+        filtered = dateFiltered;
+      } else {
+        filtered = filtered.filter(m => {
+          const t = new Date(m.event_at || m.created_at).getTime();
+          return t <= beforeMs && t >= afterMs;
+        });
+      }
+    }
+
+    return filtered;
+  }
+
+  _mergeSessionScopedCandidates(candidates, {
+    sessionId,
+    agent,
+    includeAll,
+    effectiveStatusFilter,
+    before,
+    after,
+  } = {}) {
+    if (!sessionId) return candidates;
+
+    const seen = new Set(candidates.map(m => m.id));
+    const allowed = !includeAll ? new Set(effectiveStatusFilter) : null;
+    const beforeMs = before ? new Date(before).getTime() : Infinity;
+    const afterMs = after ? new Date(after).getTime() : -Infinity;
+    const merged = [...candidates];
+
+    for (const m of this.memories) {
+      if (m.claim?.scope !== 'session' || m.claim?.sessionId !== sessionId) continue;
+      if (agent && m.agent !== agent) continue;
+      if (!includeAll && m.status && !allowed.has(m.status)) continue;
+      if (before || after) {
+        const t = new Date(m.event_at || m.created_at).getTime();
+        if (t > beforeMs || t < afterMs) continue;
+      }
+      if (!seen.has(m.id)) {
+        merged.push(m);
+        seen.add(m.id);
+      }
+    }
+
+    return merged;
+  }
+
+  _narrowEmbeddingCandidates(candidates, query, limit) {
+    let embCandidates = candidates.filter(m => m.embedding);
+    if (embCandidates.length <= 500 || this.storage.search) return embCandidates;
+
+    const queryTokens = tokenize(query);
+    if (queryTokens.length === 0) return embCandidates;
+
+    const narrowed = new Set();
+    for (const token of queryTokens) {
+      const ids = this._tokenIndex.get(token);
+      if (ids) for (const id of ids) narrowed.add(id);
+    }
+    if (narrowed.size === 0) return embCandidates;
+
+    const matched = embCandidates.filter(m => narrowed.has(m.id));
+    const rest = embCandidates.filter(m => !narrowed.has(m.id));
+    const sampleSize = Math.min(rest.length, Math.max(100, limit * 5));
+    const step = rest.length / sampleSize;
+    const sample = [];
+    for (let i = 0; i < sampleSize; i++) sample.push(rest[Math.floor(i * step)]);
+    return [...matched, ...sample];
+  }
+
+  _scoreLocalEmbeddingCandidates(embCandidates, queryEmb, {
+    minSimilarity = 0,
+    explainEnabled = false,
+    queryTokens = null,
+    counts = null,
+    excluded = null,
+  } = {}) {
+    const scored = [];
+    for (const m of embCandidates) {
+      const score = cosineSimilarity(queryEmb, m.embedding);
+      if (score < minSimilarity) {
+        if (excluded) excluded.belowMinSimilarity++;
+        continue;
+      }
+      let retrieved = null;
+      if (explainEnabled) {
+        const memoryTokens = queryTokens ? tokenize(m.memory) : [];
+        let keywordHits = 0;
+        for (const token of (queryTokens || [])) {
+          if (memoryTokens.includes(token)) keywordHits++;
+        }
+        retrieved = {
+          vectorSimilarity: score,
+          keywordScore: queryTokens && queryTokens.length > 0 ? (keywordHits / queryTokens.length) : 0,
+          keywordHits,
+        };
+      }
+      scored.push(this._shapeRetrievedMemory(m, score, retrieved));
+    }
+    scored.sort((a, b) => b.score - a.score);
+    if (counts) counts.afterSimilarity = scored.length;
+    return scored;
+  }
+
+  _reconcileServerSearchResults(serverResults, candidates, query, queryEmb, {
+    explainEnabled = false,
+    queryTokens = null,
+    counts = null,
+  } = {}) {
+    const candidateIds = new Set(candidates.map(m => m.id));
+    const filtered = serverResults
+      .filter(r => candidateIds.has(r.id))
+      .map(r => {
+        const mem = this._byId(r.id);
+        const mapped = {
+          ...r,
+          claim: mem?.claim,
+          links: mem?.links || [],
+          confidence: mem?.confidence ?? computeConfidence(mem || r),
+        };
+        if (explainEnabled) {
+          const memoryText = mem?.memory || r.memory || '';
+          const memoryTokens = queryTokens ? tokenize(memoryText) : [];
+          let keywordHits = 0;
+          for (const token of (queryTokens || [])) {
+            if (memoryTokens.includes(token)) keywordHits++;
+          }
+          const keywordScore = queryTokens && queryTokens.length > 0 ? (keywordHits / queryTokens.length) : (memoryText.toLowerCase().includes(query.toLowerCase()) ? 1.0 : 0);
+          mapped.__retrieved = {
+            vectorSimilarity: queryEmb ? (r.score ?? null) : null,
+            keywordScore,
+            keywordHits,
+          };
+        }
+        return mapped;
+      });
+    if (counts) counts.afterSimilarity = filtered.length;
+    return filtered;
+  }
+
+  _finalizeSearchResults(inputResults, {
+    rerank = true,
+    limit = 10,
+  } = {}) {
+    let results = (inputResults || []).map(r => {
+      if (r.confidence == null) {
+        return { ...r, confidence: computeConfidence(r) };
+      }
+      return r;
+    });
+
+    if (rerank !== false && results.length > 0) {
+      const weights = typeof rerank === 'object' ? rerank : undefined;
+      results = this._rerank(results, weights);
+      return results.slice(0, limit);
+    }
+
+    return results.sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, limit);
+  }
+
+  _attachExplainToResults(results, {
+    query,
+    queryEmb,
+    queryTokens,
+    rerankWeights,
+  } = {}) {
+    const now = Date.now();
+    return results.map(r => {
+      const memoryTokens = queryTokens ? tokenize(r.memory) : [];
+      let keywordHits = r.__retrieved?.keywordHits;
+      if (keywordHits == null && queryTokens && queryTokens.length > 0) {
+        keywordHits = 0;
+        for (const token of queryTokens) {
+          if (memoryTokens.includes(token)) keywordHits++;
+        }
+      }
+      const keywordScore = r.__retrieved?.keywordScore ??
+        (queryTokens && queryTokens.length > 0
+          ? ((keywordHits || 0) / queryTokens.length)
+          : (r.memory.toLowerCase().includes(query.toLowerCase()) ? 1.0 : 0));
+      const vectorSimilarity = r.__retrieved?.vectorSimilarity ??
+        (queryEmb && r.score != null && r.embedding == null ? r.score : null);
+
+      const recencyDays = (now - new Date(r.updated_at || r.created_at).getTime()) / (1000 * 60 * 60 * 24);
+      const recencyScore = Math.exp(-0.01 * recencyDays);
+      const signals = r.rankingSignals || {
+        relevance: r.score || 0,
+        confidence: r.confidence ?? 0.5,
+        recency: +recencyScore.toFixed(4),
+        importance: r.importance ?? 0.5,
+      };
+      const compositeScore = r.compositeScore ?? +(
+        signals.relevance * rerankWeights.relevance +
+        signals.confidence * rerankWeights.confidence +
+        signals.recency * rerankWeights.recency +
+        signals.importance * rerankWeights.importance
+      ).toFixed(4);
+
+      return {
+        ...r,
+        explain: {
+          retrieved: {
+            vectorSimilarity,
+            keywordScore,
+            keywordHits: keywordHits || 0,
+          },
+          rerank: {
+            weights: { ...rerankWeights },
+            signals,
+            compositeScore,
+          },
+          status: {
+            status: r.status || 'active',
+            superseded_by: r.superseded_by,
+            quarantine: r.quarantine,
+          },
+        },
+      };
+    });
+  }
+
+  _attachSearchExplainMeta(results, {
+    query,
+    agent,
+    sanitizedOptions,
+    counts,
+    excluded,
+  } = {}) {
+    results.meta = {
+      query,
+      agent,
+      options: sanitizedOptions,
+      counts: { ...counts },
+      excluded: { ...excluded },
+    };
+    return results;
+  }
+
+  _createSearchExplainState({
+    explain,
+    query,
+    limit,
+    minSimilarity,
+    before,
+    after,
+    rerank,
+    includeAll,
+    effectiveStatusFilter,
+    includeSuperseded,
+    includeDisputed,
+    includeQuarantined,
+    sessionId,
+  } = {}) {
+    const explainEnabled = explain === true;
+    const safeRerank = typeof rerank === 'object' && rerank !== null ? { ...rerank } : rerank;
+    return {
+      explainEnabled,
+      queryTokens: explainEnabled && query ? tokenize(query) : null,
+      sanitizedOptions: explainEnabled ? {
+        limit,
+        minSimilarity,
+        before,
+        after,
+        rerank: safeRerank,
+        includeAll,
+        statusFilter: [...effectiveStatusFilter],
+        includeSuperseded,
+        includeDisputed,
+        includeQuarantined,
+        sessionId,
+        explain: true,
+      } : null,
+      counts: explainEnabled ? {
+        candidates: this.memories.length,
+        afterAgentFilter: this.memories.length,
+        afterStatusFilter: this.memories.length,
+        afterSimilarity: 0,
+        returned: 0,
+      } : null,
+      excluded: explainEnabled ? {
+        superseded: 0,
+        disputed: 0,
+        quarantined: 0,
+        archived: 0,
+        belowMinSimilarity: 0,
+        scopeMismatch: 0,
+        validityMismatch: 0,
+      } : null,
+    };
+  }
+
+  _completeSearchResults(results, {
+    query,
+    agent,
+    counts,
+    explainEnabled,
+    sanitizedOptions,
+    excluded,
+    eventQuery,
+  } = {}) {
+    if (counts) counts.returned = results.length;
+    if (explainEnabled) {
+      this._attachSearchExplainMeta(results, {
+        query,
+        agent,
+        sanitizedOptions,
+        counts,
+        excluded,
+      });
+    }
+    this.emit('search', { agent, query: eventQuery ?? query, resultCount: results.length });
+    return results;
+  }
+
   // ══════════════════════════════════════════════════════════
   // STORE — A-MEM auto-linking
   // ══════════════════════════════════════════════════════════
@@ -462,280 +927,8 @@ export class MemoryGraph {
    * @param {string[]} [opts.tags=[]]
    * @returns {Promise<{id: string, links: number, topLink: string}>}
    */
-  async store(agent, text, { category = 'fact', importance = 0.7, tags = [], eventTime, claim, provenance, quarantine = false, onConflict = 'quarantine' } = {}) {
-    // Input validation
-    if (!agent || typeof agent !== 'string') throw new Error('agent must be a non-empty string');
-    if (agent.length > this.config.maxAgentLength) throw new Error(`agent exceeds max length (${this.config.maxAgentLength})`);
-    if (!/^[a-zA-Z0-9_\-. ]+$/.test(agent)) throw new Error('agent contains invalid characters (alphanumeric, hyphens, underscores, dots, spaces only)');
-    if (!text || typeof text !== 'string') throw new Error('text must be a non-empty string');
-    if (text.length > this.config.maxMemoryLength) throw new Error(`text exceeds max length (${this.config.maxMemoryLength})`);
-    if (!['quarantine', 'keep_active'].includes(onConflict)) {
-      throw new Error("onConflict must be either 'quarantine' or 'keep_active'");
-    }
-    let eventAt = undefined;
-    if (eventTime !== undefined) {
-      if (typeof eventTime === 'string') {
-        const parsed = new Date(eventTime);
-        if (isNaN(parsed.getTime())) throw new Error('eventTime must be a valid ISO 8601 date string');
-        eventAt = parsed.toISOString();
-      } else if (eventTime instanceof Date) {
-        if (isNaN(eventTime.getTime())) throw new Error('eventTime must be a valid Date');
-        eventAt = eventTime.toISOString();
-      } else {
-        throw new Error('eventTime must be a string or Date');
-      }
-    }
-
-    let normalizedClaim;
-    let predicateSchema = null;
-    if (claim !== undefined) {
-      if (typeof claim !== 'object' || claim === null) throw new Error('claim must be an object');
-      if (typeof claim.subject !== 'string' || !claim.subject.trim() || claim.subject.length > 100) {
-        throw new Error('claim.subject must be a non-empty string (max 100 chars)');
-      }
-      if (typeof claim.predicate !== 'string' || !claim.predicate.trim() || claim.predicate.length > 100) {
-        throw new Error('claim.predicate must be a non-empty string (max 100 chars)');
-      }
-      if (typeof claim.value !== 'string' || claim.value.length > 1000) {
-        throw new Error('claim.value must be a string (max 1000 chars)');
-      }
-      if (!['global', 'session', 'temporal'].includes(claim.scope)) {
-        throw new Error("claim.scope must be one of 'global', 'session', or 'temporal'");
-      }
-      if (claim.scope === 'session' && (typeof claim.sessionId !== 'string' || !claim.sessionId.trim())) {
-        throw new Error('claim.sessionId is required when claim.scope is session');
-      }
-      normalizedClaim = {
-        subject: claim.subject,
-        predicate: claim.predicate,
-        value: claim.value,
-        exclusive: claim.exclusive !== undefined ? claim.exclusive : true,
-        scope: claim.scope,
-        sessionId: claim.sessionId,
-        validFrom: claim.validFrom,
-        validUntil: claim.validUntil,
-      };
-      predicateSchema = this._getEffectivePredicateSchema(normalizedClaim.predicate);
-      normalizedClaim = normalizeClaim(normalizedClaim, predicateSchema.normalize);
-    }
-
-    await this.init();
-
-    if (normalizedClaim) {
-      const existing = this._findExactClaimDuplicate(normalizedClaim);
-      const shouldCorroborate = !!existing && (
-        predicateSchema?.cardinality !== 'multi' ||
-        predicateSchema?.dedupPolicy === 'corroborate'
-      );
-      if (shouldCorroborate) {
-        await this.corroborate(existing.id);
-        existing.updated_at = new Date().toISOString();
-        if (this.storage.incremental) {
-          await this.storage.upsert(existing);
-        } else {
-          await this.save();
-        }
-        return { ...existing, deduplicated: true };
-      }
-    }
-
-    // Enforce memory cap
-    if (this.memories.length >= this.config.maxMemories) {
-      throw new Error(`Memory limit reached (${this.config.maxMemories}). Run decay() or increase maxMemories.`);
-    }
-
-    // Embed
-    const [embedding] = await this.embeddings.embed(text);
-
-    // Find related memories for auto-linking
-    const related = [];
-    if (embedding) {
-      for (const existing of this.memories) {
-        if (!existing.embedding) continue;
-        const sim = cosineSimilarity(embedding, existing.embedding);
-        if (sim > this.config.linkThreshold) {
-          related.push({ id: existing.id, similarity: sim, agent: existing.agent });
-        }
-      }
-      related.sort((a, b) => b.similarity - a.similarity);
-    }
-    const topLinks = related.slice(0, this.config.maxLinksPerMemory);
-
-    const id = this.storage.genId();
-    const now = new Date().toISOString();
-    const memProvenance = provenance
-      ? {
-        source: provenance.source || 'inference',
-        sourceId: provenance.sourceId,
-        corroboration: 1,
-        trust: computeTrust({ source: provenance.source || 'inference', sourceId: provenance.sourceId, corroboration: 1 }, 0, 0, 0),
-      }
-      : { source: 'inference', corroboration: 1, trust: 0.5 };
-
-    const newMem = {
-      id, agent, memory: text, category, importance,
-      tags: tags || [],
-      embedding,
-      links: topLinks.map(l => ({ id: l.id, similarity: l.similarity, type: 'similar' })),
-      created_at: now,
-      updated_at: now,
-      status: 'active',
-      reinforcements: 0,
-      disputes: 0,
-      provenance: memProvenance,
-      ...(normalizedClaim && { claim: normalizedClaim }),
-      ...(eventAt !== undefined && { event_at: eventAt }),
-    };
-
-    const supersededIds = new Set();
-    let pendingConflictsChanged = false;
-    let pendingConflictId;
-    if (newMem.claim) {
-      const conflicting = this._structuralConflictCheck(newMem.claim);
-      if (conflicting.length > 0) {
-        await this._initPendingConflicts();
-        const claimSchema = this._getEffectivePredicateSchema(newMem.claim.predicate);
-        const newTrust = computeTrust(newMem.provenance, 0, 0, 0);
-        newMem.provenance.trust = newTrust;
-        for (const existing of conflicting) {
-          const existingTrust = existing.provenance?.trust ?? 0.5;
-          if (claimSchema.conflictPolicy === 'require_review') {
-            if (onConflict === 'quarantine') {
-              this._markQuarantined(newMem, { reason: 'predicate_requires_review' });
-            }
-            const pending = {
-              id: this.storage.genId(),
-              newId: newMem.id,
-              existingId: existing.id,
-              newTrust,
-              existingTrust,
-              newClaim: newMem.claim,
-              existingClaim: existing.claim,
-              created_at: new Date().toISOString(),
-            };
-            this._pendingConflicts.push(pending);
-            if (!pendingConflictId) pendingConflictId = pending.id;
-            pendingConflictsChanged = true;
-            this.emit('conflict:pending', { newId: newMem.id, existingId: existing.id, newTrust, existingTrust });
-            continue;
-          }
-
-          if (claimSchema.conflictPolicy === 'keep_both') {
-            newMem.status = 'active';
-            existing.status = 'active';
-            const nowIso = new Date().toISOString();
-            newMem.updated_at = nowIso;
-            existing.updated_at = nowIso;
-            this._pendingConflicts.push({
-              id: this.storage.genId(),
-              newId: newMem.id,
-              existingId: existing.id,
-              newTrust,
-              existingTrust,
-              newClaim: newMem.claim,
-              existingClaim: existing.claim,
-              created_at: nowIso,
-              resolved_at: nowIso,
-              resolution: 'keep_both',
-            });
-            pendingConflictsChanged = true;
-            continue;
-          }
-
-          if (newTrust >= existingTrust) {
-            existing.status = 'superseded';
-            existing.superseded_by = newMem.id;
-            newMem.supersedes = newMem.supersedes || [];
-            if (!newMem.supersedes.includes(existing.id)) newMem.supersedes.push(existing.id);
-            if (!newMem.links.find(l => l.id === existing.id && l.type === 'supersedes')) {
-              newMem.links.push({ id: existing.id, similarity: 1.0, type: 'supersedes' });
-            }
-            supersededIds.add(existing.id);
-            this.emit('supersede', { newId: newMem.id, oldId: existing.id, reason: 'trust_gated' });
-          } else {
-            if (onConflict === 'quarantine') {
-              this._markQuarantined(newMem, { reason: 'trust_insufficient' });
-            }
-            const pending = {
-              id: this.storage.genId(),
-              newId: newMem.id,
-              existingId: existing.id,
-              newTrust,
-              existingTrust,
-              newClaim: newMem.claim,
-              existingClaim: existing.claim,
-              created_at: new Date().toISOString(),
-            };
-            this._pendingConflicts.push(pending);
-            if (!pendingConflictId) pendingConflictId = pending.id;
-            pendingConflictsChanged = true;
-            this.emit('conflict:pending', { newId: newMem.id, existingId: existing.id, newTrust, existingTrust });
-          }
-        }
-      }
-    }
-
-    if (quarantine === true) {
-      this._markQuarantined(newMem, { reason: 'manual' });
-    }
-
-    this.memories.push(newMem);
-    this._indexMemory(newMem);
-
-    // A-MEM: add backlinks to related memories
-    for (const link of topLinks) {
-      const target = this._byId(link.id);
-      if (target) {
-        if (!target.links) target.links = [];
-        if (!target.links.find(l => l.id === id)) {
-          target.links.push({ id, similarity: link.similarity, type: 'similar' });
-        }
-        target.updated_at = now;
-      }
-      // Emit link event for each new connection
-      this.emit('link', { sourceId: id, targetId: link.id, similarity: link.similarity, type: 'similar' });
-    }
-
-    // Persist: use incremental ops if available, otherwise full save
-    if (this.storage.incremental) {
-      await this.storage.upsert(newMem);
-      if (topLinks.length) {
-        await this.storage.upsertLinks(id, topLinks.map(l => ({ id: l.id, similarity: l.similarity })));
-      }
-      // Update backlinked targets and trust-gated superseded memories.
-      const dirtyIds = new Set(topLinks.map(l => l.id));
-      for (const sid of supersededIds) dirtyIds.add(sid);
-      for (const targetId of dirtyIds) {
-        const target = this._byId(targetId);
-        if (target) await this.storage.upsert(target);
-      }
-    } else {
-      await this.save();
-    }
-    if (pendingConflictsChanged) await this._savePendingConflicts();
-    await this._appendWal('store', {
-      memoryId: id,
-      actor: agent,
-      data: {
-        category,
-        importance,
-        status: newMem.status,
-        links: topLinks.length,
-      },
-    });
-
-    // Emit store event
-    this.emit('store', { id, agent, content: text, category, importance, links: topLinks.length });
-
-    return {
-      id,
-      links: topLinks.length,
-      topLink: topLinks[0]
-        ? `${topLinks[0].id} (${(topLinks[0].similarity * 100).toFixed(1)}%, agent: ${topLinks[0].agent})`
-        : 'none',
-      ...(newMem.status === 'quarantined' ? { quarantined: true } : {}),
-      ...(pendingConflictId ? { pendingConflictId } : {}),
-    };
+  async store(agent, text, opts = {}) {
+    return storeSingle(this.createMutationAdapter(), agent, text, opts);
   }
 
   // ══════════════════════════════════════════════════════════
@@ -784,8 +977,6 @@ export class MemoryGraph {
    */
   async search(agent, query, { limit = 10, minSimilarity = 0, before, after, rerank = true, includeAll = false, statusFilter = ['active'], includeSuperseded = false, includeDisputed = false, includeQuarantined = false, sessionId, explain = false } = {}) {
     await this.init();
-    const explainEnabled = explain === true;
-    const queryTokens = explainEnabled && query ? tokenize(query) : null;
     const effectiveStatusFilter = this._buildStatusFilter({
       statusFilter,
       includeSuperseded,
@@ -793,111 +984,50 @@ export class MemoryGraph {
       includeQuarantined,
     });
 
-    const safeRerank = typeof rerank === 'object' && rerank !== null ? { ...rerank } : rerank;
-    const sanitizedOptions = explainEnabled ? {
+    const {
+      explainEnabled,
+      queryTokens,
+      sanitizedOptions,
+      counts,
+      excluded,
+    } = this._createSearchExplainState({
+      explain,
+      query,
       limit,
       minSimilarity,
       before,
       after,
-      rerank: safeRerank,
+      rerank,
       includeAll,
-      statusFilter: [...effectiveStatusFilter],
+      effectiveStatusFilter,
       includeSuperseded,
       includeDisputed,
       includeQuarantined,
       sessionId,
-      explain: true,
-    } : null;
-
-    const counts = explainEnabled ? {
-      candidates: this.memories.length,
-      afterAgentFilter: this.memories.length,
-      afterStatusFilter: this.memories.length,
-      afterSimilarity: 0,
-      returned: 0,
-    } : null;
-
-    const excluded = explainEnabled ? {
-      superseded: 0,
-      disputed: 0,
-      quarantined: 0,
-      archived: 0,
-      belowMinSimilarity: 0,
-      scopeMismatch: 0,
-      validityMismatch: 0,
-    } : null;
+    });
 
     // Use embedQuery for asymmetric models (NIM), fall back to embed
     // Skip embedding for empty queries (recent-only mode)
     const embedFn = this.embeddings.embedQuery || this.embeddings.embed;
     const queryEmb = query ? (await embedFn.call(this.embeddings, query))[0] : null;
 
-    let candidates = this.memories;
-    if (agent) candidates = candidates.filter(m => m.agent === agent);
-    if (counts) counts.afterAgentFilter = candidates.length;
-
-    if (!includeAll) {
-      const allowed = new Set(effectiveStatusFilter);
-      if (excluded) {
-        const filtered = [];
-        for (const m of candidates) {
-          if (!m.status || allowed.has(m.status)) {
-            filtered.push(m);
-            continue;
-          }
-          if (m.status === 'superseded') excluded.superseded++;
-          else if (m.status === 'disputed') excluded.disputed++;
-          else if (m.status === 'quarantined') excluded.quarantined++;
-          else if (m.status === 'archived') excluded.archived++;
-        }
-        candidates = filtered;
-      } else {
-        candidates = candidates.filter(m => !m.status || allowed.has(m.status));
-      }
-    }
-    if (counts) counts.afterStatusFilter = candidates.length;
-
-    if (before || after) {
-      const beforeMs = before ? new Date(before).getTime() : Infinity;
-      const afterMs = after ? new Date(after).getTime() : -Infinity;
-      if (before && isNaN(beforeMs)) throw new Error('search: "before" must be a valid date string');
-      if (after && isNaN(afterMs)) throw new Error('search: "after" must be a valid date string');
-      if (excluded) {
-        const filtered = [];
-        for (const m of candidates) {
-          const t = new Date(m.event_at || m.created_at).getTime();
-          if (t <= beforeMs && t >= afterMs) filtered.push(m);
-          else excluded.validityMismatch++;
-        }
-        candidates = filtered;
-      } else {
-        candidates = candidates.filter(m => {
-          const t = new Date(m.event_at || m.created_at).getTime();
-          return t <= beforeMs && t >= afterMs;
-        });
-      }
-    }
-    if (sessionId) {
-      const seen = new Set(candidates.map(m => m.id));
-      const allowed = !includeAll ? new Set(effectiveStatusFilter) : null;
-      const beforeMs = before ? new Date(before).getTime() : Infinity;
-      const afterMs = after ? new Date(after).getTime() : -Infinity;
-      for (const m of this.memories) {
-        if (m.claim?.scope !== 'session' || m.claim?.sessionId !== sessionId) continue;
-        if (agent && m.agent !== agent) continue;
-        if (!includeAll) {
-          if (m.status && !allowed.has(m.status)) continue;
-        }
-        if (before || after) {
-          const t = new Date(m.event_at || m.created_at).getTime();
-          if (t > beforeMs || t < afterMs) continue;
-        }
-        if (!seen.has(m.id)) {
-          candidates.push(m);
-          seen.add(m.id);
-        }
-      }
-    }
+    let candidates = this._filterSearchCandidates(this.memories, {
+      agent,
+      includeAll,
+      effectiveStatusFilter,
+      before,
+      after,
+      counts,
+      excluded,
+    });
+    candidates = this._mergeSessionScopedCandidates(candidates, {
+      sessionId,
+      agent,
+      includeAll,
+      effectiveStatusFilter,
+      before,
+      after,
+    });
 
     const applySessionOverride = (results) => {
       if (!sessionId) return results;
@@ -951,75 +1081,14 @@ export class MemoryGraph {
     };
 
     const finalizeResults = (inputResults) => {
-      let results = (inputResults || []).map(r => {
-        if (r.confidence == null) {
-          return { ...r, confidence: computeConfidence(r) };
-        }
-        return r;
-      });
-
-      // Re-rank with orthogonal signals (confidence = trust only, no double-counting)
-      if (rerank !== false && results.length > 0) {
-        const weights = typeof rerank === 'object' ? rerank : undefined;
-        results = this._rerank(results, weights);
-        results = results.slice(0, limit);
-      } else {
-        results = results.sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, limit);
-      }
+      let results = this._finalizeSearchResults(inputResults, { rerank, limit });
 
       if (explainEnabled) {
-        const now = Date.now();
-        results = results.map(r => {
-          const memoryTokens = queryTokens ? tokenize(r.memory) : [];
-          let keywordHits = r.__retrieved?.keywordHits;
-          if (keywordHits == null && queryTokens && queryTokens.length > 0) {
-            keywordHits = 0;
-            for (const token of queryTokens) {
-              if (memoryTokens.includes(token)) keywordHits++;
-            }
-          }
-          const keywordScore = r.__retrieved?.keywordScore ??
-            (queryTokens && queryTokens.length > 0
-              ? ((keywordHits || 0) / queryTokens.length)
-              : (r.memory.toLowerCase().includes(query.toLowerCase()) ? 1.0 : 0));
-          const vectorSimilarity = r.__retrieved?.vectorSimilarity ??
-            (queryEmb && r.score != null && r.embedding == null ? r.score : null);
-
-          const recencyDays = (now - new Date(r.updated_at || r.created_at).getTime()) / (1000 * 60 * 60 * 24);
-          const recencyScore = Math.exp(-0.01 * recencyDays);
-          const signals = r.rankingSignals || {
-            relevance: r.score || 0,
-            confidence: r.confidence ?? 0.5,
-            recency: +recencyScore.toFixed(4),
-            importance: r.importance ?? 0.5,
-          };
-          const compositeScore = r.compositeScore ?? +(
-            signals.relevance * rerankWeights.relevance +
-            signals.confidence * rerankWeights.confidence +
-            signals.recency * rerankWeights.recency +
-            signals.importance * rerankWeights.importance
-          ).toFixed(4);
-
-          return {
-            ...r,
-            explain: {
-              retrieved: {
-                vectorSimilarity,
-                keywordScore,
-                keywordHits: keywordHits || 0,
-              },
-              rerank: {
-                weights: { ...rerankWeights },
-                signals,
-                compositeScore,
-              },
-              status: {
-                status: r.status || 'active',
-                superseded_by: r.superseded_by,
-                quarantine: r.quarantine,
-              },
-            },
-          };
+        results = this._attachExplainToResults(results, {
+          query,
+          queryEmb,
+          queryTokens,
+          rerankWeights,
         });
       }
 
@@ -1030,175 +1099,60 @@ export class MemoryGraph {
     if (queryEmb && this.storage.search) {
       const serverResults = await this.storage.search(queryEmb, { agent, limit, minSimilarity });
       if (serverResults) {
-        const candidateIds = new Set(candidates.map(m => m.id));
-        const filtered = serverResults
-          .filter(r => candidateIds.has(r.id))
-          .map(r => {
-            const mem = this._byId(r.id);
-            const mapped = {
-              ...r,
-              claim: mem?.claim,
-              links: mem?.links || [],
-              confidence: mem?.confidence ?? computeConfidence(mem || r),
-            };
-            if (explainEnabled) {
-              const memoryText = mem?.memory || r.memory || '';
-              const memoryTokens = queryTokens ? tokenize(memoryText) : [];
-              let keywordHits = 0;
-              for (const token of (queryTokens || [])) {
-                if (memoryTokens.includes(token)) keywordHits++;
-              }
-              const keywordScore = queryTokens && queryTokens.length > 0 ? (keywordHits / queryTokens.length) : (memoryText.toLowerCase().includes(query.toLowerCase()) ? 1.0 : 0);
-              mapped.__retrieved = {
-                vectorSimilarity: r.score ?? null,
-                keywordScore,
-                keywordHits,
-              };
-            }
-            return mapped;
-          });
-        if (counts) counts.afterSimilarity = filtered.length;
+        const filtered = this._reconcileServerSearchResults(serverResults, candidates, query, queryEmb, {
+          explainEnabled,
+          queryTokens,
+          counts,
+        });
         const finalResults = finalizeResults(applySessionOverride(filtered));
-        if (counts) counts.returned = finalResults.length;
-        if (explainEnabled) {
-          finalResults.meta = {
-            query,
-            agent,
-            options: sanitizedOptions,
-            counts: { ...counts },
-            excluded: { ...excluded },
-          };
-        }
-        this.emit('search', { agent, query, resultCount: finalResults.length });
-        return finalResults;
+        return this._completeSearchResults(finalResults, {
+          query,
+          agent,
+          counts,
+          explainEnabled,
+          sanitizedOptions,
+          excluded,
+        });
       }
     }
 
-    const keywordFallback = () => {
-      const queryTokens = tokenize(query);
-      if (queryTokens.length === 0) {
-        const q = query.toLowerCase();
-        return candidates
-          .filter(m => m.memory.toLowerCase().includes(q))
-          .slice(0, limit)
-          .map(m => {
-            const out = { ...m, score: 1.0, embedding: undefined };
-            if (explainEnabled) {
-              out.__retrieved = { vectorSimilarity: null, keywordScore: 1.0, keywordHits: 1 };
-            }
-            return out;
-          });
-      }
-      const candidateIds = agent ? new Set(candidates.map(m => m.id)) : null;
-      const fallbackResults = [];
-      const scored = new Map(); // id -> matched token count
-      for (const token of queryTokens) {
-        const ids = this._tokenIndex.get(token);
-        if (!ids) continue;
-        for (const id of ids) {
-          if (candidateIds && !candidateIds.has(id)) continue;
-          scored.set(id, (scored.get(id) || 0) + 1);
-        }
-      }
-      for (const [id, count] of scored) {
-        const mem = this._byId(id);
-        if (mem) {
-          const out = { ...mem, score: count / queryTokens.length, embedding: undefined };
-          if (explainEnabled) {
-            out.__retrieved = { vectorSimilarity: null, keywordScore: out.score, keywordHits: count };
-          }
-          fallbackResults.push(out);
-        }
-      }
-      fallbackResults.sort((a, b) => b.score - a.score || b.importance - a.importance);
-      return fallbackResults.slice(0, limit);
-    };
+    const keywordFallback = () => this._buildKeywordFallbackResults(candidates, query, limit, {
+      explainEnabled,
+      restrictToCandidates: !!agent,
+    });
 
     let results;
     if (!query && !queryEmb) {
       // Empty query = recent mode: return most recent candidates
-      results = [...candidates]
-        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-        .slice(0, limit)
-        .map(m => {
-          const out = { ...m, score: 0, embedding: undefined };
-          if (explainEnabled) {
-            out.__retrieved = { vectorSimilarity: null, keywordScore: 0, keywordHits: 0 };
-          }
-          return out;
-        });
+      results = this._buildRecentResults(candidates, limit, { explainEnabled });
     } else if (!queryEmb) {
       results = keywordFallback();
     } else {
-      // Candidate narrowing: if >500 memories with embeddings, use token index to pre-filter
-      let embCandidates = candidates.filter(m => m.embedding);
-      if (embCandidates.length > 500 && !this.storage.search) {
-        const queryTokens = tokenize(query);
-        if (queryTokens.length > 0) {
-          const narrowed = new Set();
-          for (const token of queryTokens) {
-            const ids = this._tokenIndex.get(token);
-            if (ids) for (const id of ids) narrowed.add(id);
-          }
-          if (narrowed.size > 0) {
-            // Keep token-matched candidates + random sample of the rest for recall safety
-            const matched = embCandidates.filter(m => narrowed.has(m.id));
-            const rest = embCandidates.filter(m => !narrowed.has(m.id));
-            const sampleSize = Math.min(rest.length, Math.max(100, limit * 5));
-            // Deterministic sample: take evenly spaced
-            const step = rest.length / sampleSize;
-            const sample = [];
-            for (let i = 0; i < sampleSize; i++) sample.push(rest[Math.floor(i * step)]);
-            embCandidates = [...matched, ...sample];
-          }
-        }
-      }
+      let embCandidates = this._narrowEmbeddingCandidates(candidates, query, limit);
       if (embCandidates.length === 0) {
         results = keywordFallback();
         if (counts) counts.afterSimilarity = results.length;
       } else {
-        const scored = [];
-        for (const m of embCandidates) {
-          const score = cosineSimilarity(queryEmb, m.embedding);
-          if (score < minSimilarity) {
-            if (excluded) excluded.belowMinSimilarity++;
-            continue;
-          }
-          const out = { ...m, score, embedding: undefined };
-          if (explainEnabled) {
-            const memoryTokens = queryTokens ? tokenize(m.memory) : [];
-            let keywordHits = 0;
-            for (const token of (queryTokens || [])) {
-              if (memoryTokens.includes(token)) keywordHits++;
-            }
-            out.__retrieved = {
-              vectorSimilarity: score,
-              keywordScore: queryTokens && queryTokens.length > 0 ? (keywordHits / queryTokens.length) : 0,
-              keywordHits,
-            };
-          }
-          scored.push(out);
-        }
-        scored.sort((a, b) => b.score - a.score);
-        if (counts) counts.afterSimilarity = scored.length;
-        results = scored.slice(0, limit);
+        results = this._scoreLocalEmbeddingCandidates(embCandidates, queryEmb, {
+          minSimilarity,
+          explainEnabled,
+          queryTokens,
+          counts,
+          excluded,
+        }).slice(0, limit);
       }
     }
 
     if (counts && !queryEmb) counts.afterSimilarity = results.length;
     const finalResults = finalizeResults(applySessionOverride(results));
-    if (counts) counts.returned = finalResults.length;
-    if (explainEnabled) {
-      finalResults.meta = {
-        query,
-        agent,
-        options: sanitizedOptions,
-        counts: { ...counts },
-        excluded: { ...excluded },
-      };
-    }
-    this.emit('search', { agent, query, resultCount: finalResults.length });
-    return finalResults;
+    return this._completeSearchResults(finalResults, {
+      query,
+      agent,
+      counts,
+      explainEnabled,
+      sanitizedOptions,
+      excluded,
+    });
   }
 
   /**
@@ -1222,135 +1176,8 @@ export class MemoryGraph {
    * @param {number} [opts.embeddingBatchSize=64] - Batch size for embedding calls
    * @returns {Promise<{total: number, stored: number, results: Array<{id: string, links: number}>}>}
    */
-  async storeMany(agent, items, { embeddingBatchSize = 64 } = {}) {
-    if (!agent || typeof agent !== 'string') throw new Error('agent must be a non-empty string');
-    if (agent.length > this.config.maxAgentLength) throw new Error(`agent exceeds max length (${this.config.maxAgentLength})`);
-    if (!/^[a-zA-Z0-9_\-. ]+$/.test(agent)) throw new Error('agent contains invalid characters');
-    if (!Array.isArray(items) || items.length === 0) throw new Error('items must be a non-empty array');
-    if (items.length > this.config.maxBatchSize) throw new Error(`Batch of ${items.length} exceeds max batch size (${this.config.maxBatchSize})`);
-
-    await this.init();
-
-    if (this.memories.length + items.length > this.config.maxMemories) {
-      throw new Error(`Batch would exceed memory limit (${this.config.maxMemories}). Run decay() or increase maxMemories.`);
-    }
-
-    // Validate all items first
-    const texts = items.map((item, i) => {
-      const text = typeof item === 'string' ? item : item.text;
-      if (!text || typeof text !== 'string') throw new Error(`items[${i}].text must be a non-empty string`);
-      if (text.length > this.config.maxMemoryLength) throw new Error(`items[${i}].text exceeds max length`);
-      return text;
-    });
-
-    // Batch embed all texts (before mutating state)
-    const allEmbeddings = [];
-    for (let i = 0; i < texts.length; i += embeddingBatchSize) {
-      const batch = texts.slice(i, i + embeddingBatchSize);
-      const embeddings = await this.embeddings.embed(...batch);
-      allEmbeddings.push(...embeddings);
-    }
-
-    // Build all new memories + backlink mutations before committing
-    const newMems = [];
-    const backlinkAdded = []; // track {target, linkEntry} for rollback
-    const results = [];
-    const now = new Date().toISOString();
-
-    for (let i = 0; i < items.length; i++) {
-      const item = typeof items[i] === 'string' ? { text: items[i] } : items[i];
-      const embedding = allEmbeddings[i];
-      let eventAt = undefined;
-      if (item.eventTime !== undefined) {
-        const parsed = new Date(item.eventTime);
-        if (isNaN(parsed.getTime())) throw new Error(`items[${i}].eventTime is not a valid date`);
-        eventAt = parsed.toISOString();
-      }
-
-      // Find related memories for auto-linking
-      const related = [];
-      if (embedding) {
-        for (const existing of this.memories) {
-          if (!existing.embedding) continue;
-          const sim = cosineSimilarity(embedding, existing.embedding);
-          if (sim > this.config.linkThreshold) {
-            related.push({ id: existing.id, similarity: sim, agent: existing.agent });
-          }
-        }
-        // Also check already-staged new mems in this batch
-        for (const staged of newMems) {
-          if (!staged.embedding) continue;
-          const sim = cosineSimilarity(embedding, staged.embedding);
-          if (sim > this.config.linkThreshold) {
-            related.push({ id: staged.id, similarity: sim, agent: staged.agent });
-          }
-        }
-        related.sort((a, b) => b.similarity - a.similarity);
-      }
-      const topLinks = related.slice(0, this.config.maxLinksPerMemory);
-
-      const id = this.storage.genId();
-      const newMem = {
-        id, agent, memory: item.text || items[i],
-        category: item.category || 'fact',
-        importance: item.importance ?? 0.7,
-        tags: item.tags || [],
-        embedding,
-        links: topLinks.map(l => ({ id: l.id, similarity: l.similarity, type: 'similar' })),
-        created_at: now, updated_at: now,
-        ...(eventAt !== undefined && { event_at: eventAt }),
-      };
-      newMems.push(newMem);
-      results.push({ id, links: topLinks.length });
-    }
-
-    // Commit phase: push all to memory + indexes, add backlinks
-    for (const newMem of newMems) {
-      this.memories.push(newMem);
-      this._indexMemory(newMem);
-
-      for (const link of newMem.links) {
-        const target = this._byId(link.id);
-        if (target) {
-          if (!target.links) target.links = [];
-          if (!target.links.find(l => l.id === newMem.id)) {
-            const linkEntry = { id: newMem.id, similarity: link.similarity, type: 'similar' };
-            target.links.push(linkEntry);
-            target.updated_at = now;
-            backlinkAdded.push({ target, linkEntry });
-          }
-        }
-      }
-    }
-
-    // Persist — rollback on failure
-    try {
-      if (this.storage.incremental) {
-        for (const newMem of newMems) {
-          await this.storage.upsert(newMem);
-        }
-      } else {
-        await this.save();
-      }
-    } catch (err) {
-      // Rollback: remove new memories from state + indexes
-      const newIds = new Set(newMems.map(m => m.id));
-      for (const newMem of newMems) this._deindexMemory(newMem);
-      this.memories = this.memories.filter(m => !newIds.has(m.id));
-      // Rollback backlinks
-      for (const { target, linkEntry } of backlinkAdded) {
-        target.links = (target.links || []).filter(l => l !== linkEntry);
-      }
-      throw err;
-    }
-
-    // Emit events only after successful persist
-    for (let i = 0; i < newMems.length; i++) {
-      const m = newMems[i];
-      this.emit('store', { id: m.id, agent, content: m.memory, category: m.category, importance: m.importance, links: results[i].links });
-    }
-
-    return { total: items.length, stored: results.length, results };
+  async storeMany(agent, items, opts = {}) {
+    return storeBatch(this.createMutationAdapter(), agent, items, opts);
   }
 
   /**
@@ -1383,62 +1210,31 @@ export class MemoryGraph {
     const embedFn = this.embeddings.embedQuery || this.embeddings.embed;
     const allEmbeddings = await embedFn.call(this.embeddings, ...queries);
 
-    let candidates = this.memories;
-    if (agent) candidates = candidates.filter(m => m.agent === agent);
-    if (!includeAll) {
-      const allowed = new Set(this._buildStatusFilter({ statusFilter, includeSuperseded, includeDisputed, includeQuarantined }));
-      candidates = candidates.filter(m => !m.status || allowed.has(m.status));
-    }
+    const effectiveStatusFilter = this._buildStatusFilter({ statusFilter, includeSuperseded, includeDisputed, includeQuarantined });
+    let candidates = this._filterSearchCandidates(this.memories, {
+      agent,
+      includeAll,
+      effectiveStatusFilter,
+    });
 
     const output = [];
     for (let i = 0; i < queries.length; i++) {
       const queryEmb = allEmbeddings[i];
       let results;
 
-      if (!queryEmb) {
-        const queryTokens = tokenize(queries[i]);
-        if (queryTokens.length === 0) {
-          const q = queries[i].toLowerCase();
-          results = candidates.filter(m => m.memory.toLowerCase().includes(q))
-            .slice(0, limit).map(m => ({ ...m, score: 1.0, embedding: undefined }));
-        } else {
-          const candidateIds = agent ? new Set(candidates.map(m => m.id)) : null;
-          const scored = new Map();
-          for (const token of queryTokens) {
-            const ids = this._tokenIndex.get(token);
-            if (!ids) continue;
-            for (const id of ids) {
-              if (candidateIds && !candidateIds.has(id)) continue;
-              scored.set(id, (scored.get(id) || 0) + 1);
-            }
-          }
-          results = [];
-          for (const [id, count] of scored) {
-            const mem = this._byId(id);
-            if (mem) results.push({ ...mem, score: count / queryTokens.length, embedding: undefined });
-          }
-          results.sort((a, b) => b.score - a.score || b.importance - a.importance);
-          results = results.slice(0, limit);
-        }
+      if (!queries[i] && !queryEmb) {
+        results = this._buildRecentResults(candidates, limit);
+      } else if (!queryEmb) {
+        results = this._buildKeywordFallbackResults(candidates, queries[i], limit, {
+          restrictToCandidates: !!agent,
+        });
       } else {
-        results = candidates.filter(m => m.embedding)
-          .map(m => ({ ...m, score: cosineSimilarity(queryEmb, m.embedding), embedding: undefined }))
-          .filter(m => m.score >= minSimilarity)
-          .sort((a, b) => b.score - a.score)
-          .slice(0, limit);
+        results = this._scoreLocalEmbeddingCandidates(candidates.filter(m => m.embedding), queryEmb, {
+          minSimilarity,
+        }).slice(0, limit);
       }
 
-      results = results.map(r => ({
-        ...r,
-        confidence: r.confidence ?? computeConfidence(r),
-      }));
-
-      // Re-rank with orthogonal signals (confidence = trust only, no double-counting)
-      if (rerank !== false && results.length > 0) {
-        const weights = typeof rerank === 'object' ? rerank : undefined;
-        results = this._rerank(results, weights);
-        results = results.slice(0, limit);
-      }
+      results = this._finalizeSearchResults(results, { rerank, limit });
 
       this.emit('search', { agent, query: queries[i], resultCount: results.length });
       output.push({ query: queries[i], results });
@@ -1451,6 +1247,34 @@ export class MemoryGraph {
   // LINKS — Graph queries
   // ══════════════════════════════════════════════════════════
 
+  _formatLinkedNeighbor(link) {
+    const target = this._byId(link.id);
+    return {
+      id: link.id,
+      similarity: link.similarity,
+      type: link.type || 'similar',
+      memory: target?.memory || '(deleted)',
+      agent: target?.agent || '?',
+      category: target?.category || '?',
+    };
+  }
+
+  _buildLinksResult(mem) {
+    return {
+      id: mem.id,
+      memory: mem.memory,
+      agent: mem.agent,
+      category: mem.category,
+      links: (mem.links || []).map(link => this._formatLinkedNeighbor(link)),
+    };
+  }
+
+  _getFilteredOutgoingLinks(mem, { types } = {}) {
+    const outgoing = mem?.links || [];
+    if (!types) return outgoing;
+    return outgoing.filter(link => types.includes(link.type || 'similar'));
+  }
+
   /**
    * Get a memory and its linked neighbors.
    * @param {string} memoryId
@@ -1459,20 +1283,7 @@ export class MemoryGraph {
     await this.init();
     const mem = this._byId(memoryId);
     if (!mem) return null;
-
-    const linked = (mem.links || []).map(link => {
-      const target = this._byId(link.id);
-      return {
-        id: link.id,
-        similarity: link.similarity,
-        type: link.type || 'similar',
-        memory: target?.memory || '(deleted)',
-        agent: target?.agent || '?',
-        category: target?.category || '?',
-      };
-    });
-
-    return { id: mem.id, memory: mem.memory, agent: mem.agent, category: mem.category, links: linked };
+    return this._buildLinksResult(mem);
   }
 
   async link(sourceId, targetId, { type = 'related', similarity = null } = {}) {
@@ -1563,10 +1374,8 @@ export class MemoryGraph {
       });
 
       if (hop < maxHops) {
-        for (const link of (mem.links || [])) {
+        for (const link of this._getFilteredOutgoingLinks(mem, { types })) {
           if (visited.has(link.id)) continue;
-          const linkType = link.type || 'similar';
-          if (types && !types.includes(linkType)) continue;
           queue.push({ id: link.id, hop: hop + 1, similarity: link.similarity });
         }
       }
@@ -1586,6 +1395,67 @@ export class MemoryGraph {
    * Find connected components (clusters) in the graph.
    * @param {number} [minSize=2]
    */
+  _collectConnectedComponent(startId, visited) {
+    const cluster = [];
+    const queue = [startId];
+
+    while (queue.length > 0) {
+      const id = queue.shift();
+      if (visited.has(id)) continue;
+      visited.add(id);
+
+      const m = this._byId(id);
+      if (!m) continue;
+
+      cluster.push({ id: m.id, memory: m.memory, agent: m.agent, category: m.category, importance: m.importance });
+
+      for (const link of (m.links || [])) {
+        if (!visited.has(link.id)) queue.push(link.id);
+      }
+    }
+
+    return cluster;
+  }
+
+  _summarizeCluster(cluster) {
+    const tagCounts = {};
+    const agentCounts = {};
+    for (const c of cluster) {
+      agentCounts[c.agent] = (agentCounts[c.agent] || 0) + 1;
+      const full = this._byId(c.id);
+      for (const tag of (full?.tags || [])) tagCounts[tag] = (tagCounts[tag] || 0) + 1;
+    }
+    const topTags = Object.entries(tagCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(e => e[0]);
+
+    return {
+      size: cluster.length,
+      agents: agentCounts,
+      topTags,
+      memories: cluster,
+    };
+  }
+
+  _annotateClustersWithLabels(clusters) {
+    if (!this._clustersLoaded || this.labeledClusters.length === 0) return clusters;
+
+    for (const cluster of clusters) {
+      const clusterIds = new Set(cluster.memories.map(m => m.id));
+      for (const labeled of this.labeledClusters) {
+        const overlap = labeled.memoryIds.filter(id => clusterIds.has(id)).length;
+        if (overlap > 0 && overlap >= labeled.memoryIds.length * 0.5) {
+          cluster.label = labeled.label;
+          cluster.clusterId = labeled.id;
+          break;
+        }
+      }
+    }
+
+    return clusters;
+  }
+
   async clusters(minSize = 2) {
     await this.init();
     const visited = new Set();
@@ -1594,55 +1464,15 @@ export class MemoryGraph {
     for (const mem of this.memories) {
       if (visited.has(mem.id)) continue;
 
-      const cluster = [];
-      const queue = [mem.id];
-
-      while (queue.length > 0) {
-        const id = queue.shift();
-        if (visited.has(id)) continue;
-        visited.add(id);
-
-        const m = this.memories.find(x => x.id === id);
-        if (!m) continue;
-
-        cluster.push({ id: m.id, memory: m.memory, agent: m.agent, category: m.category, importance: m.importance });
-
-        for (const link of (m.links || [])) {
-          if (!visited.has(link.id)) queue.push(link.id);
-        }
-      }
+      const cluster = this._collectConnectedComponent(mem.id, visited);
 
       if (cluster.length >= minSize) {
-        const tagCounts = {};
-        const agentCounts = {};
-        for (const c of cluster) {
-          agentCounts[c.agent] = (agentCounts[c.agent] || 0) + 1;
-          const full = this._byId(c.id);
-          for (const tag of (full?.tags || [])) tagCounts[tag] = (tagCounts[tag] || 0) + 1;
-        }
-        const topTags = Object.entries(tagCounts).sort((a, b) => b[1] - a[1]).slice(0, 5).map(e => e[0]);
-        clusters.push({ size: cluster.length, agents: agentCounts, topTags, memories: cluster });
+        clusters.push(this._summarizeCluster(cluster));
       }
     }
 
     clusters.sort((a, b) => b.size - a.size);
-
-    // Annotate clusters with labels if they match a labeled cluster
-    if (this._clustersLoaded && this.labeledClusters.length > 0) {
-      for (const cluster of clusters) {
-        const clusterIds = new Set(cluster.memories.map(m => m.id));
-        for (const labeled of this.labeledClusters) {
-          const overlap = labeled.memoryIds.filter(id => clusterIds.has(id)).length;
-          if (overlap > 0 && overlap >= labeled.memoryIds.length * 0.5) {
-            cluster.label = labeled.label;
-            cluster.clusterId = labeled.id;
-            break;
-          }
-        }
-      }
-    }
-
-    return clusters;
+    return this._annotateClustersWithLabels(clusters);
   }
 
   /**
@@ -1674,10 +1504,8 @@ export class MemoryGraph {
 
       const mem = this._byId(id);
       if (!mem) continue;
-      for (const link of (mem.links || [])) {
+      for (const link of this._getFilteredOutgoingLinks(mem, { types })) {
         if (visited.has(link.id)) continue;
-        const linkType = link.type || 'similar';
-        if (types && !types.includes(linkType)) continue;
         visited.set(link.id, id);
         queue.push(link.id);
       }
